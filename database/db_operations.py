@@ -217,17 +217,21 @@ def employee_exists(username: str) -> bool:
         return False
 
 def clear_all_employees() -> bool:
-    """Очистка всех сотрудников и отпусков."""
+    """Очистка всех сотрудников и отпусков из базы данных."""
     try:
+        logger.info("Начало очистки всех сотрудников и отпусков")
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM vacations")
             cursor.execute("DELETE FROM employees")
             conn.commit()
-            logger.info("Все сотрудники и отпуска удалены")
+            logger.info("База данных успешно очищена")
             return True
     except sqlite3.Error as e:
         logger.error(f"Ошибка при очистке базы данных: {e}", exc_info=True)
+        return False
+    except Exception as e:
+        logger.error(f"Необработанная ошибка в clear_all_employees: {e}", exc_info=True)
         return False
 
 def calculate_vacation_days(start_date: str, end_date: str) -> int:

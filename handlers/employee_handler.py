@@ -20,6 +20,7 @@ GROUP_CHAT_ID = os.getenv('GROUP_CHAT_ID')
 
 logger = logging.getLogger(__name__)
 
+# Состояния для ConversationHandler
 START_DATE, END_DATE, REPLACEMENT = range(3)
 SELECT_VACATION, NEW_START_DATE, NEW_END_DATE, NEW_REPLACEMENT = range(4)
 DELETE_EMPLOYEE_ID = 100
@@ -27,7 +28,15 @@ DELETE_VACATION_SELECT = 200
 
 VACATION_LIMIT_DAYS = 28
 
+# Словарь месяцев для перевода
+MONTHS = {
+    "January": "Январь", "February": "Февраль", "March": "Март", "April": "Апрель",
+    "May": "Май", "June": "Июнь", "July": "Июль", "August": "Август",
+    "September": "Сентябрь", "October": "Октябрь", "November": "Ноябрь", "December": "Декабрь"
+}
+
 def validate_date(date_str: str) -> Tuple[bool, str]:
+    """Проверка формата даты (YYYY-MM-DD)."""
     try:
         datetime.strptime(date_str, "%Y-%m-%d")
         return True, ""
@@ -35,6 +44,7 @@ def validate_date(date_str: str) -> Tuple[bool, str]:
         return False, "Некорректный формат. Используйте YYYY-MM-DD (например, 2025-03-01)."
 
 def validate_future_date(date_str: str, start_date: Optional[str] = None) -> Tuple[bool, str]:
+    """Проверка, что дата в будущем и корректна относительно даты начала."""
     try:
         date = datetime.strptime(date_str, "%Y-%m-%d")
         if date <= datetime.now():
@@ -46,19 +56,22 @@ def validate_future_date(date_str: str, start_date: Optional[str] = None) -> Tup
         return False, "Некорректный формат. Используйте YYYY-MM-DD (например, 2025-03-01)."
 
 async def reset_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Сброс данных пользователя в context.user_data."""
     keys = ['name', 'user_id', 'username', 'start_date', 'end_date', 'replacement_username', 'vacation_id', 'vacations', 'action']
     for key in keys:
         context.user_data.pop(key, None)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отмена текущего действия."""
     await reset_state(context)
     await update.message.reply_text("Действие отменено.")
     return ConversationHandler.END
 
 async def handle_invalid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка некорректных команд."""
     admin_commands = {'/list_employees', '/delete_employee', '/stats', '/export_employees', '/clear_all_employees'}
     if update.message.text in admin_commands and is_admin(update.effective_chat.id):
-        return ConversationHandler.END  # Админские команды всегда проходят
+        return ConversationHandler.END
     if context.user_data.get('action'):
         await update.message.reply_text(f"Вы уже начали {context.user_data['action']}. Завершите его или используйте /cancel.")
         return ConversationHandler.END
@@ -66,27 +79,31 @@ async def handle_invalid_command(update: Update, context: ContextTypes.DEFAULT_T
     return ConversationHandler.END
 
 async def handle_random_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка случайного текста, если не начато действие."""
     if not context.user_data.get('action'):
         await update.message.reply_text("Я не понимаю, что вы имеете в виду. Используйте команду, например, /add_vacation.")
 
 async def add_vacation_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.effective_chat.type == 'private':
-        await update.message.reply_text("Все команды доступны только в личных сообщениях. Напиши мне в личку!")
+    """Начало процесса добавления отпуска."""
+    if update.effective_chat.type != 'private':
+        await update.message.reply_text("Все команды доступны только в личных сообщениях. Напишите мне в личку!")
         return ConversationHandler.END
     user_id, username, full_name = identify_user(update)
-    if not user_id or not username or not full_name:
-        logger.error(f"Не удалось определить user_id, username или full_name для чата {update.effective_chat.id}")
-        await update.message.reply_text("Не удалось определить пользователя. Обратитесь к @Admin за помощью.")
+    if not all([user_id, username, full_name]):
+        logger.error(f"Не удалось определить данные пользователя для чата {update.effective_chat.id}: user_id={user_id}, username={username}, full_name={full_name}")
+        await update.message.reply_text("Не удалось определить пользователя. Обратитесь к @Admin.")
         return ConversationHandler.END
     db_user_id = add_employee_to_db(full_name, username)
     if db_user_id is None:
-        logger.error(f"Не удалось добавить сотрудника для username={username}")
+        logger.error(f"Не удалось добавить сотрудника username={username}")
         await update.message.reply_text("Ошибка при добавлении сотрудника. Обратитесь к @Admin.")
         return ConversationHandler.END
-    context.user_data['name'] = full_name
-    context.user_data['user_id'] = db_user_id
-    context.user_data['username'] = username
-    context.user_data['action'] = "добавление отпуска"
+    context.user_data.update({
+        'name': full_name,
+        'user_id': db_user_id,
+        'username': username,
+        'action': "добавление отпуска"
+    })
     await update.message.reply_text(
         f"Привет, {full_name} (@{username})!\n\n"
         "Укажите дату начала отпуска (YYYY-MM-DD, например, 2025-03-01) или /cancel."
@@ -94,32 +111,34 @@ async def add_vacation_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return START_DATE
 
 async def add_vacation_start_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка даты начала отпуска."""
     text = update.message.text.strip()
     if text == "/cancel":
         return await cancel(update, context)
     is_valid, error = validate_date(text)
     if not is_valid:
-        await update.message.reply_text(error + " Попробуйте снова или /cancel.")
+        await update.message.reply_text(f"{error} Попробуйте снова или /cancel.")
         return START_DATE
     is_future, error = validate_future_date(text)
     if not is_future:
-        await update.message.reply_text(error + " Попробуйте снова или /cancel.")
+        await update.message.reply_text(f"{error} Попробуйте снова или /cancel.")
         return START_DATE
     context.user_data['start_date'] = text
     await update.message.reply_text("Укажите дату окончания (YYYY-MM-DD, например, 2025-03-15) или /cancel.")
     return END_DATE
 
 async def add_vacation_end_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка даты окончания отпуска."""
     text = update.message.text.strip()
     if text == "/cancel":
         return await cancel(update, context)
     is_valid, error = validate_date(text)
     if not is_valid:
-        await update.message.reply_text(error + " Попробуйте снова или /cancel.")
+        await update.message.reply_text(f"{error} Попробуйте снова или /cancel.")
         return END_DATE
     is_future, error = validate_future_date(text, context.user_data.get('start_date'))
     if not is_future:
-        await update.message.reply_text(error + " Попробуйте снова или /cancel.")
+        await update.message.reply_text(f"{error} Попробуйте снова или /cancel.")
         return END_DATE
     context.user_data['end_date'] = text
     user_id = context.user_data.get('user_id')
@@ -127,7 +146,9 @@ async def add_vacation_end_date(update: Update, context: ContextTypes.DEFAULT_TY
     used_days = get_used_vacation_days(user_id, current_year)
     days_requested = calculate_vacation_days(context.user_data['start_date'], text)
     if used_days + days_requested > VACATION_LIMIT_DAYS:
-        await update.message.reply_text(f"Лимит превышен. Использовано {used_days} дней, запрос: {days_requested} дней. Укажите другие даты или /cancel.")
+        await update.message.reply_text(
+            f"Лимит превышен. Использовано {used_days} дней, запрос: {days_requested} дней. Укажите другие даты или /cancel."
+        )
         return START_DATE
     if check_vacation_overlap(user_id, context.user_data['start_date'], text):
         await update.message.reply_text("Этот отпуск пересекается с вашим. Укажите другие даты или /cancel.")
@@ -136,10 +157,11 @@ async def add_vacation_end_date(update: Update, context: ContextTypes.DEFAULT_TY
     return REPLACEMENT
 
 async def add_vacation_replacement(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Завершение добавления отпуска с указанием замещающего."""
     text = update.message.text.strip()
     if text == "/cancel":
         return await cancel(update, context)
-    if text == "/skip":
+    elif text == "/skip":
         context.user_data['replacement_username'] = None
     elif text.startswith('@'):
         context.user_data['replacement_username'] = text
@@ -147,10 +169,11 @@ async def add_vacation_replacement(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("Неверный формат. Введите @username, /skip или /cancel.")
         return REPLACEMENT
 
-    user_id = context.user_data.get('user_id')
+    user_id = context.user_data['user_id']
     start_date = context.user_data['start_date']
     end_date = context.user_data['end_date']
-    if add_vacation(user_id, start_date, end_date, context.user_data['replacement_username']):
+    replacement = context.user_data['replacement_username']
+    if add_vacation(user_id, start_date, end_date, replacement):
         current_year = datetime.now().year
         vacations = get_user_vacations(user_id)
         used_days = get_used_vacation_days(user_id, current_year)
@@ -161,26 +184,33 @@ async def add_vacation_replacement(update: Update, context: ContextTypes.DEFAULT
             "ОТПУСК ДОБАВЛЕН!\n\n"
             f"Сотрудник: {context.user_data['name']} (@{username})\n"
             f"Даты: {start_date} - {end_date}\n"
-            f"Замещающий: {context.user_data['replacement_username'] or 'Нет'}\n"
+            f"Замещающий: {replacement or 'Нет'}\n"
             f"{vacation_info}\n"
             f"Использовано дней: {used_days}\n\n"
             "Вопросы? @Admin"
         )
         await update.message.reply_text(message)
         group_message = f"{context.user_data['name']} (@{username}) взял отпуск с {start_date} по {end_date}"
-        if context.user_data['replacement_username']:
-            group_message += f", замещающий: {context.user_data['replacement_username']}"
+        if replacement:
+            group_message += f", замещающий: {replacement}"
         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
         logger.info(f"User {user_id} added vacation: {start_date} - {end_date}")
     else:
+        logger.error(f"Ошибка добавления отпуска для user_id={user_id}: {start_date} - {end_date}")
         await update.message.reply_text("Ошибка при добавлении. Попробуйте снова или /cancel.")
+    await reset_state(context)
     return ConversationHandler.END
 
 async def edit_vacation_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.effective_chat.type == 'private':
-        await update.message.reply_text("Все команды доступны только в личных сообщениях. Напиши мне в личку!")
+    """Начало редактирования отпуска."""
+    if update.effective_chat.type != 'private':
+        await update.message.reply_text("Все команды доступны только в личных сообщениях. Напишите мне в личку!")
         return ConversationHandler.END
     user_id, username, full_name = identify_user(update)
+    if not all([user_id, username, full_name]):
+        logger.error(f"Не удалось определить данные пользователя для чата {update.effective_chat.id}")
+        await update.message.reply_text("Не удалось определить пользователя. Обратитесь к @Admin.")
+        return ConversationHandler.END
     db_user_id = get_employee_by_username(username)
     if not db_user_id:
         await update.message.reply_text("Сотрудник не найден. Обратитесь к @Admin.")
@@ -189,16 +219,20 @@ async def edit_vacation_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not vacations:
         await update.message.reply_text("У вас нет отпусков для редактирования.")
         return ConversationHandler.END
-    context.user_data['vacations'] = vacations
-    context.user_data['action'] = "редактирование отпуска"
-    context.user_data['user_id'] = db_user_id
-    context.user_data['username'] = username
-    context.user_data['name'] = full_name
+    context.user_data.update({
+        'vacations': vacations,
+        'action': "редактирование отпуска",
+        'user_id': db_user_id,
+        'username': username,
+        'name': full_name
+    })
     keyboard = []
     for i, (vacation_id, start, end, replacement) in enumerate(vacations):
         replacement_text = f" (Замещает: {replacement})" if replacement else ""
-        start_date = datetime.strptime(start, "%Y-%m-%d").strftime("%B %d").replace("January", "Январь").replace("February", "Февраль").replace("March", "Март").replace("April", "Апрель").replace("May", "Май").replace("June", "Июнь").replace("July", "Июль").replace("August", "Август").replace("September", "Сентябрь").replace("October", "Октябрь").replace("November", "Ноябрь").replace("December", "Декабрь")
-        end_date = datetime.strptime(end, "%Y-%m-%d").strftime("%B %d").replace("January", "Январь").replace("February", "Февраль").replace("March", "Март").replace("April", "Апрель").replace("May", "Май").replace("June", "Июнь").replace("July", "Июль").replace("August", "Август").replace("September", "Сентябрь").replace("October", "Октябрь").replace("November", "Ноябрь").replace("December", "Декабрь")
+        start_date = datetime.strptime(start, "%Y-%m-%d").strftime("%B %d")
+        start_date = f"{MONTHS[start_date.split()[0]]} {start_date.split()[1]}"
+        end_date = datetime.strptime(end, "%Y-%m-%d").strftime("%B %d")
+        end_date = f"{MONTHS[end_date.split()[0]]} {end_date.split()[1]}"
         button_text = f"{i+1}. {start_date} – {end_date}{replacement_text}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=str(vacation_id))])
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -206,6 +240,7 @@ async def edit_vacation_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     return SELECT_VACATION
 
 async def select_vacation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор отпуска для редактирования."""
     query = update.callback_query
     await query.answer()
     vacation_id = int(query.data)
@@ -214,7 +249,8 @@ async def select_vacation(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return NEW_START_DATE
 
 async def edit_vacation_start_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip().lower()  # Приводим к нижнему регистру
+    """Обработка новой даты начала при редактировании."""
+    text = update.message.text.strip().lower()
     if text == "/cancel":
         return await cancel(update, context)
     if text == "/skip":
@@ -223,31 +259,32 @@ async def edit_vacation_start_date(update: Update, context: ContextTypes.DEFAULT
         return NEW_END_DATE
     is_valid, error = validate_date(text)
     if not is_valid:
-        await update.message.reply_text(error + " Попробуйте снова или /cancel.")
+        await update.message.reply_text(f"{error} Попробуйте снова или /cancel.")
         return NEW_START_DATE
     is_future, error = validate_future_date(text)
     if not is_future:
-        await update.message.reply_text(error + " Попробуйте снова или /cancel.")
+        await update.message.reply_text(f"{error} Попробуйте снова или /cancel.")
         return NEW_START_DATE
     context.user_data['new_start_date'] = text
     await update.message.reply_text("Укажите новую дату окончания (YYYY-MM-DD) или /skip.")
     return NEW_END_DATE
 
 async def edit_vacation_end_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
+    """Обработка новой даты окончания при редактировании."""
+    text = update.message.text.strip().lower()
     if text == "/cancel":
         return await cancel(update, context)
-    if text.lower() == "/skip":
+    if text == "/skip":
         context.user_data['new_end_date'] = None
         await update.message.reply_text("Укажите @username нового замещающего, /skip или /remove.")
         return NEW_REPLACEMENT
     is_valid, error = validate_date(text)
     if not is_valid:
-        await update.message.reply_text(error + " Попробуйте снова или /cancel.")
+        await update.message.reply_text(f"{error} Попробуйте снова или /cancel.")
         return NEW_END_DATE
     is_future, error = validate_future_date(text, context.user_data.get('new_start_date'))
     if not is_future:
-        await update.message.reply_text(error + " Попробуйте снова или /cancel.")
+        await update.message.reply_text(f"{error} Попробуйте снова или /cancel.")
         return NEW_END_DATE
     context.user_data['new_end_date'] = text
     user_id = context.user_data['user_id']
@@ -264,7 +301,9 @@ async def edit_vacation_end_date(update: Update, context: ContextTypes.DEFAULT_T
     )
     new_total_days = total_current_days - old_days + days_requested
     if new_total_days > VACATION_LIMIT_DAYS:
-        await update.message.reply_text(f"Лимит превышен. Использовано {total_current_days - old_days} дней, запрос: {days_requested} дней. Укажите другие даты или /cancel.")
+        await update.message.reply_text(
+            f"Лимит превышен. Использовано {total_current_days - old_days} дней, запрос: {days_requested} дней. Укажите другие даты или /cancel."
+        )
         return NEW_START_DATE
     if check_vacation_overlap(user_id, new_start, new_end, vacation_id):
         await update.message.reply_text("Новый отпуск пересекается с вашим. Укажите другие даты или /cancel.")
@@ -273,96 +312,64 @@ async def edit_vacation_end_date(update: Update, context: ContextTypes.DEFAULT_T
     return NEW_REPLACEMENT
 
 async def edit_vacation_replacement(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Завершение редактирования отпуска с указанием замещающего."""
     text = update.message.text.strip().lower()
     if text == "/cancel":
         return await cancel(update, context)
-    if text == "/skip" or text == "/remove":
+    elif text in ["/skip", "/remove"]:
         context.user_data['new_replacement_username'] = None
-        # Завершаем редактирование
-        vacation_id = context.user_data['vacation_id']
-        user_id = context.user_data['user_id']
-        if edit_vacation(vacation_id, context.user_data.get('new_start_date'), context.user_data.get('new_end_date'), None):
-            username = context.user_data['username']
-            name = context.user_data['name']
-            start_date = context.user_data.get('new_start_date') or next((v[1] for v in get_user_vacations(user_id) if v[0] == vacation_id), None)
-            end_date = context.user_data.get('new_end_date') or next((v[2] for v in get_user_vacations(user_id) if v[0] == vacation_id), None)
-            current_year = datetime.now().year
-            vacations = get_user_vacations(user_id)
-            used_days = get_used_vacation_days(user_id, current_year)
-            vacation_lines = [f"{i+1}. {start} – {end}" for i, (_, start, end, _) in enumerate(vacations)]
-            vacation_info = f"Отпусков в {current_year}: {len(vacations)}\n" + "\n".join(vacation_lines) if vacations else "Нет запланированных отпусков."
-            message = (
-                "ОТПУСК ОТРЕДАКТИРОВАН!\n\n"
-                f"Сотрудник: {name} (@{username})\n"
-                f"Даты: {start_date} - {end_date}\n"
-                f"Замещающий: Нет\n"
-                f"{vacation_info}\n"
-                f"Использовано дней: {used_days}\n\n"
-                "Вопросы? @Admin"
-            )
-            await update.message.reply_text(message)
-            group_message = f"{name} (@{username}) изменил отпуск: с {start_date} по {end_date}"
-            await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
-            logger.info(f"User {user_id} edited vacation {vacation_id}")
-        else:
-            await update.message.reply_text("Ошибка при редактировании. Попробуйте снова или /cancel.")
-        return ConversationHandler.END
     elif text.startswith('@'):
         context.user_data['new_replacement_username'] = text
-        # Завершаем редактирование с новым замещающим
-        vacation_id = context.user_data['vacation_id']
-        user_id = context.user_data['user_id']
-        if edit_vacation(vacation_id, context.user_data.get('new_start_date'), context.user_data.get('new_end_date'), text):
-            username = context.user_data['username']
-            name = context.user_data['name']
-            start_date = context.user_data.get('new_start_date') or next((v[1] for v in get_user_vacations(user_id) if v[0] == vacation_id), None)
-            end_date = context.user_data.get('new_end_date') or next((v[2] for v in get_user_vacations(user_id) if v[0] == vacation_id), None)
-            current_year = datetime.now().year
-            vacations = get_user_vacations(user_id)
-            used_days = get_used_vacation_days(user_id, current_year)
-            vacation_lines = [f"{i+1}. {start} – {end}" for i, (_, start, end, _) in enumerate(vacations)]
-            vacation_info = f"Отпусков в {current_year}: {len(vacations)}\n" + "\n".join(vacation_lines) if vacations else "Нет запланированных отпусков."
-            message = (
-                "ОТПУСК ОТРЕДАКТИРОВАН!\n\n"
-                f"Сотрудник: {name} (@{username})\n"
-                f"Даты: {start_date} - {end_date}\n"
-                f"Замещающий: {text}\n"
-                f"{vacation_info}\n"
-                f"Использовано дней: {used_days}\n\n"
-                "Вопросы? @Admin"
-            )
-            await update.message.reply_text(message)
-            group_message = f"{name} (@{username}) изменил отпуск: с {start_date} по {end_date}, замещающий: {text}"
-            await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
-            logger.info(f"User {user_id} edited vacation {vacation_id}")
-        else:
-            await update.message.reply_text("Ошибка при редактировании. Попробуйте снова или /cancel.")
-        return ConversationHandler.END
     else:
         await update.message.reply_text("Неверный формат. Введите @username, /skip, /remove или /cancel.")
         return NEW_REPLACEMENT
 
-edit_vacation_handler = ConversationHandler(
-    entry_points=[CommandHandler('edit_vacation', edit_vacation_start, filters.ChatType.PRIVATE)],
-    states={
-        SELECT_VACATION: [CallbackQueryHandler(select_vacation)],
-        NEW_START_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_vacation_start_date)],
-        NEW_END_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_vacation_end_date)],
-        NEW_REPLACEMENT: [
-            MessageHandler(filters.TEXT & ~filters.COMMAND, edit_vacation_replacement),
-            CommandHandler('skip', lambda update, context: edit_vacation_replacement(update, context)),  # Явная обработка /skip
-            CommandHandler('remove', lambda update, context: edit_vacation_replacement(update, context)),  # Явная обработка /remove
-        ],
-    },
-    fallbacks=[CommandHandler('cancel', cancel)],
-    per_message=False
-)
+    vacation_id = context.user_data['vacation_id']
+    user_id = context.user_data['user_id']
+    new_start_date = context.user_data.get('new_start_date')
+    new_end_date = context.user_data.get('new_end_date')
+    new_replacement = context.user_data.get('new_replacement_username')
+    if edit_vacation(vacation_id, new_start_date, new_end_date, new_replacement):
+        username = context.user_data['username']
+        name = context.user_data['name']
+        start_date = new_start_date or next((v[1] for v in get_user_vacations(user_id) if v[0] == vacation_id), None)
+        end_date = new_end_date or next((v[2] for v in get_user_vacations(user_id) if v[0] == vacation_id), None)
+        current_year = datetime.now().year
+        vacations = get_user_vacations(user_id)
+        used_days = get_used_vacation_days(user_id, current_year)
+        vacation_lines = [f"{i+1}. {start} – {end}" for i, (_, start, end, _) in enumerate(vacations)]
+        vacation_info = f"Отпусков в {current_year}: {len(vacations)}\n" + "\n".join(vacation_lines) if vacations else "Нет запланированных отпусков."
+        message = (
+            "ОТПУСК ОТРЕДАКТИРОВАН!\n\n"
+            f"Сотрудник: {name} (@{username})\n"
+            f"Даты: {start_date} - {end_date}\n"
+            f"Замещающий: {new_replacement or 'Нет'}\n"
+            f"{vacation_info}\n"
+            f"Использовано дней: {used_days}\n\n"
+            "Вопросы? @Admin"
+        )
+        await update.message.reply_text(message)
+        group_message = f"{name} (@{username}) изменил отпуск: с {start_date} по {end_date}"
+        if new_replacement:
+            group_message += f", замещающий: {new_replacement}"
+        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
+        logger.info(f"User {user_id} edited vacation {vacation_id}")
+    else:
+        logger.error(f"Ошибка редактирования отпуска ID={vacation_id} для user_id={user_id}")
+        await update.message.reply_text("Ошибка при редактировании. Попробуйте снова или /cancel.")
+    await reset_state(context)
+    return ConversationHandler.END
 
 async def delete_vacation_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.effective_chat.type == 'private':
-        await update.message.reply_text("Все команды доступны только в личных сообщениях. Напиши мне в личку!")
+    """Начало удаления отпуска."""
+    if update.effective_chat.type != 'private':
+        await update.message.reply_text("Все команды доступны только в личных сообщениях. Напишите мне в личку!")
         return ConversationHandler.END
     user_id, username, full_name = identify_user(update)
+    if not all([user_id, username, full_name]):
+        logger.error(f"Не удалось определить данные пользователя для чата {update.effective_chat.id}")
+        await update.message.reply_text("Не удалось определить пользователя. Обратитесь к @Admin.")
+        return ConversationHandler.END
     db_user_id = get_employee_by_username(username)
     if not db_user_id:
         await update.message.reply_text("Сотрудник не найден. Обратитесь к @Admin.")
@@ -371,16 +378,20 @@ async def delete_vacation_start(update: Update, context: ContextTypes.DEFAULT_TY
     if not vacations:
         await update.message.reply_text("У вас нет отпусков для удаления.")
         return ConversationHandler.END
-    context.user_data['vacations'] = vacations
-    context.user_data['action'] = "удаление отпуска"
-    context.user_data['user_id'] = db_user_id
-    context.user_data['username'] = username
-    context.user_data['name'] = full_name
+    context.user_data.update({
+        'vacations': vacations,
+        'action': "удаление отпуска",
+        'user_id': db_user_id,
+        'username': username,
+        'name': full_name
+    })
     keyboard = []
     for i, (vacation_id, start, end, replacement) in enumerate(vacations):
         replacement_text = f" (Замещает: {replacement})" if replacement else ""
-        start_date = datetime.strptime(start, "%Y-%m-%d").strftime("%B %d").replace("January", "Январь").replace("February", "Февраль").replace("March", "Март").replace("April", "Апрель").replace("May", "Май").replace("June", "Июнь").replace("July", "Июль").replace("August", "Август").replace("September", "Сентябрь").replace("October", "Октябрь").replace("November", "Ноябрь").replace("December", "Декабрь")
-        end_date = datetime.strptime(end, "%Y-%m-%d").strftime("%B %d").replace("January", "Январь").replace("February", "Февраль").replace("March", "Март").replace("April", "Апрель").replace("May", "Май").replace("June", "Июнь").replace("July", "Июль").replace("August", "Август").replace("September", "Сентябрь").replace("October", "Октябрь").replace("November", "Ноябрь").replace("December", "Декабрь")
+        start_date = datetime.strptime(start, "%Y-%m-%d").strftime("%B %d")
+        start_date = f"{MONTHS[start_date.split()[0]]} {start_date.split()[1]}"
+        end_date = datetime.strptime(end, "%Y-%m-%d").strftime("%B %d")
+        end_date = f"{MONTHS[end_date.split()[0]]} {end_date.split()[1]}"
         button_text = f"{i+1}. {start_date} – {end_date}{replacement_text}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=str(vacation_id))])
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -388,6 +399,7 @@ async def delete_vacation_start(update: Update, context: ContextTypes.DEFAULT_TY
     return DELETE_VACATION_SELECT
 
 async def delete_vacation_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Завершение удаления отпуска."""
     query = update.callback_query
     await query.answer()
     vacation_id = int(query.data)
@@ -406,12 +418,15 @@ async def delete_vacation_select(update: Update, context: ContextTypes.DEFAULT_T
         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
         logger.info(f"User {user_id} deleted vacation {vacation_id}")
     else:
+        logger.error(f"Ошибка удаления отпуска ID={vacation_id} для user_id={user_id}")
         await query.edit_message_text("Ошибка при удалении отпуска. Обратитесь к @Admin.")
+    await reset_state(context)
     return ConversationHandler.END
 
 async def notify_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.effective_chat.type == 'private':
-        await update.message.reply_text("Все команды доступны только в личных сообщениях. Напиши мне в личку!")
+    """Показ предстоящих отпусков."""
+    if update.effective_chat.type != 'private':
+        await update.message.reply_text("Все команды доступны только в личных сообщениях. Напишите мне в личку!")
         return
     current_date = datetime.now().date()
     seven_days_later = current_date + timedelta(days=7)
@@ -421,13 +436,14 @@ async def notify_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     message = "СПИСОК ПРЕДСТОЯЩИХ ОТПУСКОВ НА 7 ДНЕЙ:\n\n"
     for _, full_name, username, start_date, end_date, replacement in vacations:
-        replacement = f" (Замещает: {replacement})" if replacement else ""
-        message += f"{full_name} (@{username}): {start_date} - {end_date}{replacement}\n"
-    message += "Вопросы? @Admin"
+        replacement_text = f" (Замещает: {replacement})" if replacement else ""
+        message += f"{full_name} (@{username}): {start_date} - {end_date}{replacement_text}\n"
+    message += "\nВопросы? @Admin"
     await update.message.reply_text(message)
 
 async def list_employees(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.effective_chat.type == 'private' or not is_admin(update.effective_chat.id):
+    """Список сотрудников (для админа)."""
+    if update.effective_chat.type != 'private' or not is_admin(update.effective_chat.id):
         await update.message.reply_text("Эта команда доступна только администратору в личных сообщениях.")
         return
     try:
@@ -445,13 +461,15 @@ async def list_employees(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Произошла ошибка при получении списка сотрудников. Обратитесь к @Admin.")
 
 async def delete_employee_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not update.effective_chat.type == 'private' or not is_admin(update.effective_chat.id):
+    """Начало удаления сотрудника (для админа)."""
+    if update.effective_chat.type != 'private' or not is_admin(update.effective_chat.id):
         await update.message.reply_text("Эта команда доступна только администратору в личных сообщениях.")
         return ConversationHandler.END
     await update.message.reply_text("Укажите ID сотрудника для удаления:")
     return DELETE_EMPLOYEE_ID
 
 async def delete_employee_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Завершение удаления сотрудника."""
     text = update.message.text.strip()
     if text == "/cancel":
         return await cancel(update, context)
@@ -467,7 +485,8 @@ async def delete_employee_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.effective_chat.type == 'private' or not is_admin(update.effective_chat.id):
+    """Статистика отпусков (для админа)."""
+    if update.effective_chat.type != 'private' or not is_admin(update.effective_chat.id):
         await update.message.reply_text("Эта команда доступна только администратору в личных сообщениях.")
         return
     stats = get_vacation_stats()
@@ -480,7 +499,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(message)
 
 async def export_employees(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.effective_chat.type == 'private' or not is_admin(update.effective_chat.id):
+    """Экспорт списка сотрудников (для админа)."""
+    if update.effective_chat.type != 'private' or not is_admin(update.effective_chat.id):
         await update.message.reply_text("Эта команда доступна только администратору в личных сообщениях.")
         return
     import pandas as pd
@@ -501,16 +521,33 @@ async def export_employees(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     buffer.close()
 
 async def clear_all_employees_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.effective_chat.type == 'private' or not is_admin(update.effective_chat.id):
-        await update.message.reply_text("Эта команда доступна только администратору в личных сообщениях.")
+    """Очистка всех сотрудников и их отпусков (для админа)."""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    logger.info(f"Получена команда /clear_all_employees от пользователя {user_id} в чате {chat_id}")
+    
+    # Проверка на администратора
+    if not is_admin(user_id):
+        logger.warning(f"Команда /clear_all_employees вызвана не админом: {user_id}")
+        await update.message.reply_text("Эта команда доступна только администратору.")
         return
-    if clear_all_employees():
-        await update.message.reply_text("Все сотрудники и отпуска удалены.")
-        await reset_state(context)
-    else:
-        await update.message.reply_text("Ошибка при очистке базы данных. Обратитесь к @Admin.")
+    
+    # Выполнение очистки с явным логированием
+    try:
+        result = clear_all_employees()
+        logger.info(f"Результат очистки базы данных: {result}")
+        if result:
+            await update.message.reply_text("Все сотрудники и отпуска удалены.")
+            await reset_state(context)
+        else:
+            logger.error(f"Функция clear_all_employees вернула False для user_id={user_id}")
+            await update.message.reply_text("Ошибка при очистке базы данных. Обратитесь к @Admin.")
+    except Exception as e:
+        logger.error(f"Ошибка при выполнении clear_all_employees: {e}", exc_info=True)
+        await update.message.reply_text("Произошла ошибка при очистке. Обратитесь к @Admin.")
 
 async def set_bot_commands(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Установка команд бота для интерфейса Telegram."""
     public_commands = [
         BotCommand("add_vacation", "Добавить отпуск"),
         BotCommand("edit_vacation", "Редактировать отпуск"),
@@ -527,12 +564,16 @@ async def set_bot_commands(context: ContextTypes.DEFAULT_TYPE) -> None:
     await context.bot.set_my_commands(public_commands, scope={"type": "all_private_chats"})
     await context.bot.set_my_commands(public_commands + admin_commands, scope={"type": "chat", "chat_id": ADMIN_ID})
 
+# Определение ConversationHandler'ов
 add_vacation_handler = ConversationHandler(
     entry_points=[CommandHandler('add_vacation', add_vacation_start, filters.ChatType.PRIVATE)],
     states={
         START_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vacation_start_date)],
         END_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vacation_end_date)],
-        REPLACEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vacation_replacement)],
+        REPLACEMENT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, add_vacation_replacement),
+            CommandHandler('skip', add_vacation_replacement),
+        ],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
     per_message=False
@@ -544,7 +585,11 @@ edit_vacation_handler = ConversationHandler(
         SELECT_VACATION: [CallbackQueryHandler(select_vacation)],
         NEW_START_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_vacation_start_date)],
         NEW_END_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_vacation_end_date)],
-        NEW_REPLACEMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_vacation_replacement)],
+        NEW_REPLACEMENT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, edit_vacation_replacement),
+            CommandHandler('skip', edit_vacation_replacement),
+            CommandHandler('remove', edit_vacation_replacement),
+        ],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
     per_message=False
@@ -559,17 +604,20 @@ delete_vacation_handler = ConversationHandler(
     per_message=False
 )
 
-notify_handler = CommandHandler('notify', notify_handler, filters.ChatType.PRIVATE)
 delete_employee_handler = ConversationHandler(
-    entry_points=[CommandHandler('delete_employee', delete_employee_command, filters.ChatType.PRIVATE & filters.User(ADMIN_ID))],
+    entry_points=[CommandHandler('delete_employee', delete_employee_command, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_ID))],
     states={
         DELETE_EMPLOYEE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, delete_employee_id)],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
+    per_message=False
 )
-list_employees_handler = CommandHandler('list_employees', list_employees, filters.ChatType.PRIVATE & filters.User(ADMIN_ID))
-stats_handler = CommandHandler('stats', stats, filters.ChatType.PRIVATE & filters.User(ADMIN_ID))
-export_employees_handler = CommandHandler('export_employees', export_employees, filters.ChatType.PRIVATE & filters.User(ADMIN_ID))
-clear_all_employees_handler = CommandHandler('clear_all_employees', clear_all_employees_command, filters.ChatType.PRIVATE & filters.User(ADMIN_ID))
+
+# Простые обработчики команд
+notify_handler = CommandHandler('notify', notify_handler, filters.ChatType.PRIVATE)
+list_employees_handler = CommandHandler('list_employees', list_employees, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_ID))
+stats_handler = CommandHandler('stats', stats, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_ID))
+export_employees_handler = CommandHandler('export_employees', export_employees, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_ID))
+clear_all_employees_handler = CommandHandler('clear_all_employees', clear_all_employees_command)
 invalid_command_handler = MessageHandler(filters.COMMAND & ~filters.Regex(r'^/(cancel|start|help)$'), handle_invalid_command, filters.ChatType.PRIVATE)
 random_text_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_random_text, filters.ChatType.PRIVATE)
