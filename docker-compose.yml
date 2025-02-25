@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  vacation-bot:
+    build: .
+    container_name: vacation-bot-container
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./uploaded_files:/app/uploaded_files
+      - ./employees.db:/app/employees.db
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
