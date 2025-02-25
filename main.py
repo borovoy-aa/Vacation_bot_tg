@@ -102,5 +102,7 @@ async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
 from handlers.employee_handler import add_vacation_handler, edit_vacation_handler, delete_employee_handler, list_employees_handler, stats_handler, export_employees_handler, notify_handler
 
+#Тест
+
 if __name__ == '__main__':
     main()
