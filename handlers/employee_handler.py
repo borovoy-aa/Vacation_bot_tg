@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Tuple, Optional, List
 
-from telegram import BotCommand, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import BotCommand, ReplyKeyboardMarkup, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ConversationHandler, MessageHandler, filters, CommandHandler, ContextTypes, CallbackQueryHandler
 
 from database.db_operations import (
@@ -10,7 +10,7 @@ from database.db_operations import (
     list_employees_db, delete_employee, employee_exists, clear_all_employees, calculate_vacation_days,
     get_used_vacation_days, get_vacation_stats, get_all_vacations, get_employee_by_username, delete_vacation
 )
-from utils.helpers import identify_user, is_admin
+from utils.helpers import escape_markdown_v2, identify_user, is_admin
 import os
 from dotenv import load_dotenv
 
@@ -82,6 +82,53 @@ async def handle_random_text(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Обработка случайного текста, если не начато действие."""
     if not context.user_data.get('action'):
         await update.message.reply_text("Я не понимаю, что вы имеете в виду. Используйте команду, например, /add_vacation.")
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отправка приветственного сообщения при команде /start."""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    username = update.effective_user.username or "пользователь"
+    full_name = update.effective_user.full_name or username
+    logger.info(f"Команда /start вызвана пользователем {user_id} ({full_name}) в чате {chat_id}")
+
+    # Клавиатура для удобства
+    keyboard = [
+        ["/add_vacation", "/edit_vacation"],
+        ["/delete_vacation", "/notify"],
+    ]
+    if is_admin(user_id):
+        keyboard.append(["/list_employees", "/stats"])
+        keyboard.append(["/delete_employee", "/export_employees"])
+        keyboard.append(["/clear_all_employees"])
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+    # Общее сообщение для всех (без Markdown)
+    message = (
+        f"👋 Привет, {full_name} (@{username})!\n"
+        "Я бот для управления отпусками. Вот что я умею:\n\n"
+        "📅 /add_vacation — Добавить свой отпуск (укажите дату начала, окончания и замещающего)\n"
+        "✏️ /edit_vacation — Изменить существующий отпуск (выберите отпуск, обновите даты или замещающего)\n"
+        "🗑️ /delete_vacation — Удалить свой отпуск\n"
+        "🔔 /notify — Показать предстоящие отпуска на 7 дней\n"
+        "🚫 /cancel — Отменить текущее действие\n\n"
+        "Все команды работают только в личных сообщениях. Даты вводите в формате YYYY-MM-DD (например, 2025-03-01)."
+    )
+
+    # Дополнительно для админа
+    if is_admin(user_id):
+        message += (
+            "\n\nКоманды для администратора:\n"
+            "👥 /list_employees — Показать список сотрудников и их отпусков\n"
+            "🗑️ /delete_employee <ID> — Удалить сотрудника по ID\n"
+            "📊 /stats — Статистика отпусков по месяцам\n"
+            "📤 /export_employees — Выгрузить данные в Excel\n"
+            "⚠️ /clear_all_employees — Удалить всех сотрудников и их отпуска\n\n"
+            "Вы админ, так что управляйте всем через личку!"
+        )
+    else:
+        message += "\nЕсли что-то непонятно, обратитесь к @Admin!"
+
+    await update.message.reply_text(message, reply_markup=reply_markup)
 
 async def add_vacation_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Начало процесса добавления отпуска."""
@@ -190,9 +237,9 @@ async def add_vacation_replacement(update: Update, context: ContextTypes.DEFAULT
             "Вопросы? @Admin"
         )
         await update.message.reply_text(message)
-        group_message = f"{context.user_data['name']} (@{username}) взял отпуск с {start_date} по {end_date}"
+        group_message = f"{context.user_data['name']} (@{username}) \nВзял отпуск с {start_date} по {end_date}"
         if replacement:
-            group_message += f", замещающий: {replacement}"
+            group_message += f", замещающий: {replacement} \nFYI @Admin!"
         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
         logger.info(f"User {user_id} added vacation: {start_date} - {end_date}")
     else:
@@ -349,9 +396,9 @@ async def edit_vacation_replacement(update: Update, context: ContextTypes.DEFAUL
             "Вопросы? @Admin"
         )
         await update.message.reply_text(message)
-        group_message = f"{name} (@{username}) изменил отпуск: с {start_date} по {end_date}"
+        group_message = f"{name} (@{username}) изменил отпуск: с {start_date} по {end_date} \nFYI @Admin!"
         if new_replacement:
-            group_message += f", замещающий: {new_replacement}"
+            group_message += f", замещающий: {new_replacement} \nFYI @Admin!"
         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
         logger.info(f"User {user_id} edited vacation {vacation_id}")
     else:
@@ -414,7 +461,7 @@ async def delete_vacation_select(update: Update, context: ContextTypes.DEFAULT_T
         username = context.user_data['username']
         name = context.user_data['name']
         await query.edit_message_text(f"Отпуск с {start_date} по {end_date} удалён.")
-        group_message = f"{name} (@{username}) отменил отпуск с {start_date} по {end_date}"
+        group_message = f"{name} (@{username}) отменил отпуск с {start_date} по {end_date} \nFYI @Admin!"
         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
         logger.info(f"User {user_id} deleted vacation {vacation_id}")
     else:
@@ -624,3 +671,4 @@ export_employees_handler = CommandHandler('export_employees', export_employees, 
 clear_all_employees_handler = CommandHandler('clear_all_employees', clear_all_employees_command)
 invalid_command_handler = MessageHandler(filters.COMMAND & ~filters.Regex(r'^/(cancel|start|help)$'), handle_invalid_command, filters.ChatType.PRIVATE)
 random_text_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_random_text, filters.ChatType.PRIVATE)
+start_handler = CommandHandler('start', start)

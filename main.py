@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 from handlers.employee_handler import (
     add_vacation_handler, edit_vacation_handler, delete_employee_handler, list_employees_handler,
     stats_handler, export_employees_handler, notify_handler, invalid_command_handler,
-    set_bot_commands, delete_vacation_handler, random_text_handler, clear_all_employees_handler
+    set_bot_commands, delete_vacation_handler, random_text_handler, clear_all_employees_handler,
+    start_handler
 )
 from handlers.notification_handler import setup_notifications
 from database.db_operations import create_tables
@@ -16,8 +17,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     handlers=[
-        logging.StreamHandler(),  # Вывод в консоль
-        logging.FileHandler('bot.log')  # Сохранение в файл
+        logging.StreamHandler(),
+        logging.FileHandler('bot.log')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ def main() -> None:
         return
 
     logger.info("Регистрация обработчиков...")
-    # Ставим clear_all_employees_handler первым, чтобы исключить перехват
+    application.add_handler(start_handler)
     application.add_handler(clear_all_employees_handler)
     application.add_handler(add_vacation_handler)
     application.add_handler(edit_vacation_handler)
@@ -83,6 +84,33 @@ def main() -> None:
     except Exception as e:
         logger.error(f"Ошибка при настройке уведомлений: {e}", exc_info=True)
 
+    # Приветственное сообщение админу при запуске (без Markdown)
+    async def send_welcome(context: ContextTypes.DEFAULT_TYPE):
+        admin_id = int(os.getenv('ADMIN_ID'))
+        message = (
+            "👋 Бот успешно запущен!\n\n"
+            "Я готов к работе. Вы администратор, вот что я умею:\n\n"
+            "Команды для всех сотрудников:\n"
+            "📅 /add_vacation — Добавить новый отпуск\n"
+            "✏️ /edit_vacation — Изменить существующий отпуск\n"
+            "🗑️ /delete_vacation — Удалить свой отпуск\n"
+            "🔔 /notify — Показать предстоящие отпуска на 7 дней\n"
+            "🚫 /cancel — Отменить текущее действие\n\n"
+            "Команды только для админа:\n"
+            "👥 /list_employees — Список всех сотрудников\n"
+            "🗑️ /delete_employee <ID> — Удалить сотрудника\n"
+            "📊 /stats — Статистика отпусков\n"
+            "📤 /export_employees — Выгрузить данные в Excel\n"
+            "⚠️ /clear_all_employees — Удалить всех сотрудников\n\n"
+            "Все команды работают в личных сообщениях. Вопросы? Пишите @Admin."
+        )
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=message)
+            logger.info(f"Приветственное сообщение отправлено админу {admin_id}")
+        except Exception as e:
+            logger.error(f"Ошибка при отправке приветствия админу {admin_id}: {e}", exc_info=True)
+
+    application.job_queue.run_once(send_welcome, when=1)
     application.job_queue.run_once(set_bot_commands, when=0)
 
     logger.info("Запуск бота...")
