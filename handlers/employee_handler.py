@@ -237,9 +237,10 @@ async def add_vacation_replacement(update: Update, context: ContextTypes.DEFAULT
             "Вопросы? @Admin"
         )
         await update.message.reply_text(message)
-        group_message = f"{context.user_data['name']} (@{username}) \nВзял отпуск с {start_date} по {end_date}"
+        group_message = f"🌴 {context.user_data['name']} (@{username}) взял отпуск \n📅 С {start_date} по {end_date}"
         if replacement:
-            group_message += f", замещающий: {replacement} \nFYI @Admin!"
+            group_message += f"\n👤 Замещающий: {replacement}"
+        group_message += "\n\n🎯 FYI @Admin"
         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
         logger.info(f"User {user_id} added vacation: {start_date} - {end_date}")
     else:
@@ -396,9 +397,13 @@ async def edit_vacation_replacement(update: Update, context: ContextTypes.DEFAUL
             "Вопросы? @Admin"
         )
         await update.message.reply_text(message)
-        group_message = f"{name} (@{username}) изменил отпуск: с {start_date} по {end_date} \nFYI @Admin!"
+        group_message = (
+            f"✏️ {name} (@{username}) изменил отпуск:"
+            f"\n📅 С {start_date} по {end_date}"
+        )
         if new_replacement:
-            group_message += f", замещающий: {new_replacement} \nFYI @Admin!"
+            group_message += f"\n👤 Замещающий: {new_replacement}"
+        group_message += "\n\n🎯 FYI @Admin"
         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
         logger.info(f"User {user_id} edited vacation {vacation_id}")
     else:
@@ -461,7 +466,11 @@ async def delete_vacation_select(update: Update, context: ContextTypes.DEFAULT_T
         username = context.user_data['username']
         name = context.user_data['name']
         await query.edit_message_text(f"Отпуск с {start_date} по {end_date} удалён.")
-        group_message = f"{name} (@{username}) отменил отпуск с {start_date} по {end_date} \nFYI @Admin!"
+        group_message = (
+            f"🚫 {name} (@{username}) отменил отпуск:"
+            f"\n📅 С {start_date} по {end_date}\n\n"
+            f"🎯 FYI @Admin"
+        )
         await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
         logger.info(f"User {user_id} deleted vacation {vacation_id}")
     else:
