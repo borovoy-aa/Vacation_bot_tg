@@ -485,17 +485,20 @@ async def delete_employee_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Статистика отпусков (для админа)."""
-    if update.effective_chat.type != 'private' or not is_admin(update.effective_chat.id):
+    """Статистика отпусков (для админа): количество отпусков, дней и сотрудников по месяцам."""
+    if update.effective_chat.type != 'private' or not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору в личных сообщениях.")
         return
     stats = get_vacation_stats()
     message = "СТАТИСТИКА ОТПУСКОВ:\n\n"
-    for month, count, days in stats:
-        message += f"Месяц {month}: {count} отпусков, {days:.0f} дней\n"
+    for month, count, days, employee_count in stats:
+        message += f"Месяц {month}: {count} отпусков, {days:.0f} дней, {employee_count} сотрудников\n"
     total_vacations = sum(row[1] for row in stats)
     total_days = sum(row[2] for row in stats)
-    message += f"\nВсего: {total_vacations} отпусков, {total_days:.0f} дней\n\nВопросы? @Admin"
+    # Подсчёт уникальных сотрудников за всё время через get_all_vacations()
+    all_vacations = get_all_vacations()
+    total_employees = len(set(vac[0] for vac in all_vacations if vac[3]))  # vac[0] — user_id, vac[3] — start_date (проверка на наличие отпуска)
+    message += f"\nВсего: {total_vacations} отпусков, {total_days:.0f} дней, {total_employees} сотрудников\n\nВопросы? @Admin"
     await update.message.reply_text(message)
 
 async def export_employees(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

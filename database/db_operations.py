@@ -265,18 +265,20 @@ def get_used_vacation_days(user_id: int, year: int) -> int:
         logger.error(f"Ошибка при получении использованных дней для user_id={user_id}: {e}", exc_info=True)
         return 0
 
-def get_vacation_stats() -> List[Tuple[str, int, float]]:
-    """Получение статистики по отпускам."""
+def get_vacation_stats() -> List[Tuple[str, int, float, int]]:
+    """Получение статистики по отпускам: месяц, количество отпусков, дни, количество сотрудников."""
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT strftime('%m', start_date) as month, 
+                SELECT strftime('%m', start_date) as month,
                        COUNT(*) as vacation_count,
-                       start_date, end_date 
-                FROM vacations 
-                GROUP BY month 
+                       COUNT(DISTINCT user_id) as employee_count,
+                       start_date,
+                       end_date
+                FROM vacations
+                GROUP BY month
                 ORDER BY month
             """)
             stats = []
@@ -284,9 +286,10 @@ def get_vacation_stats() -> List[Tuple[str, int, float]]:
                 month = row['month']
                 month_name = datetime(2023, int(month), 1).strftime('%B').replace("January", "Январь").replace("February", "Февраль").replace("March", "Март").replace("April", "Апрель").replace("May", "Май").replace("June", "Июнь").replace("July", "Июль").replace("August", "Август").replace("September", "Сентябрь").replace("October", "Октябрь").replace("November", "Ноябрь").replace("December", "Декабрь")
                 count = row['vacation_count']
+                employee_count = row['employee_count']
                 cursor.execute("SELECT start_date, end_date FROM vacations WHERE strftime('%m', start_date) = ?", (month,))
                 days = sum(calculate_vacation_days(row['start_date'], row['end_date']) for row in cursor.fetchall())
-                stats.append((month_name, count, days))
+                stats.append((month_name, count, days, employee_count))
             return stats
     except sqlite3.Error as e:
         logger.error(f"Ошибка при получении статистики отпусков: {e}", exc_info=True)
