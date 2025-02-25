@@ -9,7 +9,7 @@ from handlers.employee_handler import (
     set_bot_commands, delete_vacation_handler, random_text_handler, clear_all_employees_handler,
     start_handler
 )
-from handlers.notification_handler import setup_notifications
+from handlers.notification_handler import setup_notifications, test_notifications_handler
 from database.db_operations import create_tables
 
 # Настройка логирования
@@ -72,7 +72,8 @@ def main() -> None:
     application.add_handler(stats_handler)
     application.add_handler(export_employees_handler)
     application.add_handler(notify_handler)
-    application.add_handler(invalid_command_handler)
+    application.add_handler(test_notifications_handler)
+    # application.add_handler(invalid_command_handler)  # Закомментировано, чтобы не отвечать в группах
     application.add_handler(random_text_handler)
     logger.info("Все обработчики зарегистрированы.")
 
@@ -101,7 +102,8 @@ def main() -> None:
             "🗑️ /delete_employee <ID> — Удалить сотрудника\n"
             "📊 /stats — Статистика отпусков\n"
             "📤 /export_employees — Выгрузить данные в Excel\n"
-            "⚠️ /clear_all_employees — Удалить всех сотрудников\n\n"
+            "⚠️ /clear_all_employees — Удалить всех сотрудников\n"
+            "🔔 /test_notifications — Тест автоматических уведомлений\n\n"
             "Все команды работают в личных сообщениях. Вопросы? Пишите @Admin."
         )
         try:
