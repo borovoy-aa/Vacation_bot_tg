@@ -4,6 +4,7 @@ from typing import Tuple, Optional, List
 
 from telegram import BotCommand, ReplyKeyboardMarkup, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ConversationHandler, MessageHandler, filters, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.error import BadRequest
 
 from database.db_operations import (
     add_employee_to_db, add_vacation, get_upcoming_vacations, get_user_vacations, edit_vacation, check_vacation_overlap,
@@ -16,7 +17,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
-GROUP_CHAT_ID = os.getenv('GROUP_CHAT_ID')
+GROUP_CHAT_ID = int(os.getenv('GROUP_CHAT_ID'))  # Фиксированная группа из .env
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,15 @@ def validate_future_date(date_str: str, start_date: Optional[str] = None) -> Tup
         return True, ""
     except ValueError:
         return False, "Некорректный формат. Используйте YYYY-MM-DD (например, 2025-03-01)."
+
+async def check_group_membership(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """Проверка, состоит ли пользователь в указанной группе."""
+    try:
+        member = await context.bot.get_chat_member(chat_id=GROUP_CHAT_ID, user_id=user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except BadRequest as e:
+        logger.error(f"Ошибка проверки членства пользователя {user_id} в группе {GROUP_CHAT_ID}: {e}")
+        return False
 
 async def reset_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
@@ -111,6 +121,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     full_name = update.effective_user.full_name or username
     logger.info(f"Команда /start вызвана пользователем {user_id} ({full_name}) в чате {chat_id}")
 
+    if update.effective_chat.type != 'private':
+        await update.message.reply_text("Все команды доступны только в личных сообщениях. Напишите мне в личку!")
+        return
+
+    if not await check_group_membership(context, user_id):
+        await update.message.reply_text("Вы не состоите в разрешённой группе. Обратитесь к @Admin для доступа.")
+        return
+
     keyboard = [
         ["/add_vacation", "/edit_vacation"],
         ["/delete_vacation", "/notify"],
@@ -127,9 +145,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "📅 /add_vacation — Добавить свой отпуск\n"
         "✏️ /edit_vacation — Изменить существующий отпуск\n"
         "🗑️ /delete_vacation — Удалить свой отпуск\n"
-        "🔔 /notify — Показать предстоящие отпуска на 7 дней\n"
-        "🚫 /cancel — Отменить текущее действие\n\n"
-        "Все команды работают только в личных сообщениях. Даты вводите в формате YYYY-MM-DD (например, 2025-03-01)."
+        "🔔 /notify — Показать предстоящие отпуска на 7 дней\n\n"
+        "Все команды работают только в личных сообщениях. \nДаты вводите в формате YYYY-MM-DD (например, 2025-03-01)."
     )
 
     if is_admin(user_id):
@@ -143,9 +160,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Вы админ, так что управляйте всем через личку!"
         )
     else:
-        message += "\nЕсли что-то непонятно, обратитесь к @Admin!"
-
-    message += "\nВопросы? Пишите @Admin."
+        message += "\n\nЕсли что-то непонятно, обратитесь к @Admin!"
 
     await update.message.reply_text(message, reply_markup=reply_markup)
 
@@ -153,12 +168,16 @@ async def add_vacation_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if update.effective_chat.type != 'private':
         await update.message.reply_text("Все команды доступны только в личных сообщениях. Напишите мне в личку!")
         return ConversationHandler.END
+    user_id = update.effective_user.id
+    if not await check_group_membership(context, user_id):
+        await update.message.reply_text("Вы не состоите в разрешённой группе. Обратитесь к @Admin для доступа.")
+        return ConversationHandler.END
     if context.user_data.get('action'):
         await update.message.reply_text("Сначала заверши текущее действие или выйди через /cancel.")
         return ConversationHandler.END
     user_id, username, full_name = identify_user(update)
     if not all([user_id, username, full_name]):
-        logger.error(f"Не удалось определить данные пользователя для чата {update.effective_chat.id}: user_id={user_id}, username={username}, full_name={full_name}")
+        logger.error(f"Не удалось определить данные пользователя для чата {update.effective_chat.id}")
         await update.message.reply_text("Не удалось определить пользователя. Обратитесь к @Admin.")
         return ConversationHandler.END
     db_user_id = add_employee_to_db(full_name, username)
@@ -270,8 +289,11 @@ async def add_vacation_replacement(update: Update, context: ContextTypes.DEFAULT
         )
         if replacement:
             group_message += f"\n👤 Замещающий: {replacement}"
-        group_message += "\n\n🎯 FYI @Admin"
-        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
+        group_message += "\n🎯 @Admin"
+        try:
+            await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
+        except Exception as e:
+            logger.error(f"Ошибка отправки в группу {GROUP_CHAT_ID}: {e}")
         logger.info(f"User {user_id} added vacation: {start_date} - {end_date}")
     else:
         logger.error(f"Ошибка добавления отпуска для user_id={user_id}: {start_date} - {end_date}")
@@ -280,9 +302,12 @@ async def add_vacation_replacement(update: Update, context: ContextTypes.DEFAULT
     return ConversationHandler.END
 
 async def edit_vacation_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало редактирования отпуска."""
     if update.effective_chat.type != 'private':
         await update.message.reply_text("Все команды доступны только в личных сообщениях. Напишите мне в личку!")
+        return ConversationHandler.END
+    user_id = update.effective_user.id
+    if not await check_group_membership(context, user_id):
+        await update.message.reply_text("Вы не состоите в разрешённой группе. Обратитесь к @Admin для доступа.")
         return ConversationHandler.END
     if context.user_data.get('action'):
         await update.message.reply_text("Сначала заверши текущее действие или выйди через /cancel.")
@@ -322,18 +347,16 @@ async def edit_vacation_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     return SELECT_VACATION
 
 async def select_vacation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Выбор отпуска для редактирования."""
     query = update.callback_query
     await query.answer()
     vacation_id = int(query.data)
     context.user_data['vacation_id'] = vacation_id
     context.user_data['state'] = NEW_START_DATE
-    await query.edit_message_text("Вы выбрали отпуск для редактирования.")  # Удаляем кнопки
-    await query.message.reply_text("Укажите новую дату начала (YYYY-MM-DD, например, 2025-03-01) или /skip.")  # Новое сообщение
+    await query.edit_message_text("Вы выбрали отпуск для редактирования.")
+    await query.message.reply_text("Укажите новую дату начала (YYYY-MM-DD, например, 2025-03-01) или /skip.")
     return NEW_START_DATE
 
 async def edit_vacation_start_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка новой даты начала при редактировании."""
     text = update.message.text.strip().lower()
     if text == "/cancel":
         return await cancel(update, context)
@@ -356,7 +379,6 @@ async def edit_vacation_start_date(update: Update, context: ContextTypes.DEFAULT
     return NEW_END_DATE
 
 async def edit_vacation_end_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка новой даты окончания при редактировании."""
     text = update.message.text.strip().lower()
     if text == "/cancel":
         return await cancel(update, context)
@@ -401,7 +423,6 @@ async def edit_vacation_end_date(update: Update, context: ContextTypes.DEFAULT_T
     return NEW_REPLACEMENT
 
 async def edit_vacation_replacement(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Завершение редактирования отпуска с указанием замещающего."""
     text = update.message.text.strip().lower()
     if text == "/cancel":
         return await cancel(update, context)
@@ -444,8 +465,11 @@ async def edit_vacation_replacement(update: Update, context: ContextTypes.DEFAUL
         )
         if new_replacement:
             group_message += f"\n👤 Замещающий: {new_replacement}"
-        group_message += "\n\n🎯 FYI @Admin"
-        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
+        group_message += "\n🎯 @Admin"
+        try:
+            await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
+        except Exception as e:
+            logger.error(f"Ошибка отправки в группу {GROUP_CHAT_ID}: {e}")
         logger.info(f"User {user_id} edited vacation {vacation_id}")
     else:
         logger.error(f"Ошибка редактирования отпуска ID={vacation_id} для user_id={user_id}")
@@ -456,6 +480,10 @@ async def edit_vacation_replacement(update: Update, context: ContextTypes.DEFAUL
 async def delete_vacation_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.effective_chat.type != 'private':
         await update.message.reply_text("Все команды доступны только в личных сообщениях. Напишите мне в личку!")
+        return ConversationHandler.END
+    user_id = update.effective_user.id
+    if not await check_group_membership(context, user_id):
+        await update.message.reply_text("Вы не состоите в разрешённой группе. Обратитесь к @Admin для доступа.")
         return ConversationHandler.END
     if context.user_data.get('action'):
         await update.message.reply_text("Сначала заверши текущее действие или выйди через /cancel.")
@@ -512,10 +540,13 @@ async def delete_vacation_select(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(f"Отпуск с {start_date} по {end_date} удалён.")
         group_message = (
             f"🚫 {name} (@{username}) отменил отпуск:\n"
-            f"📅 С {start_date} по {end_date}\n\n"
-            f"🎯 FYI @Admin"
+            f"📅 С {start_date} по {end_date}\n"
+            f"🎯 @Admin"
         )
-        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
+        try:
+            await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=group_message)
+        except Exception as e:
+            logger.error(f"Ошибка отправки в группу {GROUP_CHAT_ID}: {e}")
         logger.info(f"User {user_id} deleted vacation {vacation_id}")
     else:
         logger.error(f"Ошибка удаления отпуска ID={vacation_id} для user_id={user_id}")
@@ -526,6 +557,10 @@ async def delete_vacation_select(update: Update, context: ContextTypes.DEFAULT_T
 async def notify_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type != 'private':
         await update.message.reply_text("Все команды доступны только в личных сообщениях. Напишите мне в личку!")
+        return
+    user_id = update.effective_user.id
+    if not await check_group_membership(context, user_id):
+        await update.message.reply_text("Вы не состоите в разрешённой группе. Обратитесь к @Admin для доступа.")
         return
     if context.user_data.get('action'):
         await update.message.reply_text("Сначала заверши текущее действие или выйди через /cancel.")
