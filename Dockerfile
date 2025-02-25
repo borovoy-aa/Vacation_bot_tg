@@ -1,15 +1,18 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# Установка sqlite3
+# Установка sqlite3 и очистка кэша
 RUN apt-get update && apt-get install -y sqlite3 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && pip list | grep telegram
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p /app/uploaded_files
+# Создаём директорию для данных
+RUN mkdir -p /app/data
+
+VOLUME /app/data
 
 CMD ["python", "main.py"]

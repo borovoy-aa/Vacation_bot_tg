@@ -1,58 +1,77 @@
 import logging
 from datetime import datetime, timedelta
-
-# Сторонние библиотеки
 from telegram import Update
-from telegram.ext import ContextTypes, JobQueue
-from telegram.error import BadRequest
-
-# Локальные модули
-from database.db_operations import get_upcoming_vacations
+from telegram.ext import ContextTypes, Application
 
 logger = logging.getLogger(__name__)
 
-async def vacation_notify(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Уведомление о предстоящих отпусках за 7, 3 и 1 день в общем чате."""
-    chat_id = '-1002368339454'  # ID общего чата для уведомлений
-    admin_id = 303982483  # ID администратора
-    
-    for days_ahead in [7, 3, 1]:
+async def send_vacation_notification(context: ContextTypes.DEFAULT_TYPE, days_before: int) -> None:
+    """Отправка уведомлений о предстоящих отпусках за days_before дней."""
+    try:
+        from database.db_operations import get_upcoming_vacations
         current_date = datetime.now().date()
-        target_date = current_date + timedelta(days=days_ahead)  # Используем date
-        vacations = get_upcoming_vacations(target_date)
-        
-        if vacations:
-            message = f"УВЕДОМЛЕНИЕ ОБ ОТПУСКАХ ЗА {days_ahead} ДЕНЬ(-ЕЙ):\n\n"
-            for user_id, full_name, username, start_date, end_date, replacement in vacations:
-                if datetime.strptime(start_date, "%Y-%m-%d").date() == target_date:
-                    replacement = f" (Замещает: {replacement})" if replacement else ""
-                    message += f"{full_name} (@{username}): {start_date} - {end_date}{replacement}\n"
-            message += "Вопросы? @Admin"
-            
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=message)
-                await context.bot.send_message(chat_id=admin_id, text=message)
-            except BadRequest as e:
-                logger.error(f"Ошибка при отправке уведомления о отпусках за {days_ahead} дней: {e}")
-        else:
-            message = f"На ближайшие {days_ahead} дней отпусков нет."
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=message)
-                await context.bot.send_message(chat_id=admin_id, text=message)
-            except BadRequest as e:
-                logger.error(f"Ошибка при отправке уведомления о отсутствии отпусков за {days_ahead} дней: {e}")
+        notification_date = current_date + timedelta(days=days_before)
+        vacations = get_upcoming_vacations(notification_date)
 
-def setup_notifications(job_queue: JobQueue, group_chat_id: str, admin_chat_id: str) -> None:
-    """Настройка периодических уведомлений."""
-    # Проверяем, существуют ли задачи с такими именами
-    existing_jobs = job_queue.jobs()
-    existing_job_names = [job.name for job in existing_jobs] if existing_jobs else []
-    for days in [7, 3, 1]:
-        job_name = f"vacation_notify_{days}"
-        if job_name not in existing_job_names:
+        group_chat_id = context.bot_data.get('group_chat_id')
+        admin_id = context.bot_data.get('admin_id')
+
+        if not vacations or not group_chat_id or not admin_id:
+            return
+
+        message = f"УВЕДОМЛЕНИЕ: Отпуска, начинающиеся через {days_before} дней:\n\n"
+        for user_id, full_name, username, start_date, end_date, replacement in vacations:
+            replacement_text = f" (Замещает: {replacement})" if replacement else ""
+            message += f"{full_name} (@{username}): {start_date} - {end_date}{replacement_text}\n"
+        message += "\nВопросы? @Admin"
+
+        # Отправка в общий чат
+        await context.bot.send_message(chat_id=group_chat_id, text=message)
+        logger.info(f"Уведомление отправлено в общий чат {group_chat_id} за {days_before} дней.")
+
+        # Отправка администратору
+        await context.bot.send_message(chat_id=admin_id, text=message)
+        logger.info(f"Уведомление отправлено администратору {admin_id} за {days_before} дней.")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке уведомления: {e}")
+
+def setup_notifications(application: Application, group_chat_id: str, admin_id: int) -> None:
+    """Настройка автоматических уведомлений о предстоящих отпусках."""
+    try:
+        # Сохраняем данные в контексте бота
+        application.bot_data['group_chat_id'] = group_chat_id
+        application.bot_data['admin_id'] = admin_id
+
+        # Получаем job_queue из application
+        job_queue = application.job_queue
+
+        # Проверяем существующие задачи (используем get_jobs для версии 20.5)
+        existing_jobs = job_queue.jobs()
+        job_names = {job.name for job in existing_jobs if hasattr(job, 'name')}
+
+        # Настройка задач на уведомления
+        if 'vacation_notify_7' not in job_names:
             job_queue.run_daily(
-                lambda context: vacation_notify(context),
-                time=datetime.now().replace(hour=9, minute=0, second=0, microsecond=0).time(),
-                name=job_name
+                lambda context: send_vacation_notification(context, 7),
+                time=datetime.strptime("09:00", "%H:%M").time(),
+                name='vacation_notify_7'
             )
-    logger.info(f"Уведомления настроены: чат {group_chat_id}, админ {admin_chat_id}.")
+            logger.info("Уведомления за 7 дней настроены.")
+
+        if 'vacation_notify_3' not in job_names:
+            job_queue.run_daily(
+                lambda context: send_vacation_notification(context, 3),
+                time=datetime.strptime("09:00", "%H:%M").time(),
+                name='vacation_notify_3'
+            )
+            logger.info("Уведомления за 3 дня настроены.")
+
+        if 'vacation_notify_1' not in job_names:
+            job_queue.run_daily(
+                lambda context: send_vacation_notification(context, 1),
+                time=datetime.strptime("09:00", "%H:%M").time(),
+                name='vacation_notify_1'
+            )
+            logger.info("Уведомления за 1 день настроены.")
+    except Exception as e:
+        logger.error(f"Ошибка при настройке уведомлений: {e}")

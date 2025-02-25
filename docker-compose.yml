@@ -8,10 +8,12 @@ services:
     env_file:
       - .env
     volumes:
-      - ./uploaded_files:/app/uploaded_files
-      - ./employees.db:/app/employees.db
+      - ./data:/app/data
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  vacation-bot-data:

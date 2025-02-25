@@ -75,7 +75,7 @@ async def upload_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
             # Добавление сотрудника
             user_id = update.effective_user.id  # Используем user_id текущего пользователя как временное решение
-            new_user_id = add_employee_to_db(name, None, user_id)
+            new_user_id = add_employee_to_db(name, None)
             if not new_user_id:
                 error_messages.append(f"Ошибка при добавлении сотрудника: {name}")
                 continue

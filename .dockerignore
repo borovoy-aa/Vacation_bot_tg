@@ -6,8 +6,9 @@ __pycache__
 env/
 venv/
 *.log
+employees.db
+.env
 .git
 .gitignore
-.env
-employees.db
-uploaded_files/
+Dockerfile
+docker-compose.yml

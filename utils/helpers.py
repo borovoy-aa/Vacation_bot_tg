@@ -4,22 +4,22 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def escape_markdown_v2(text: str) -> str:
+    """Экранирование символов для MarkdownV2."""
+    escape_chars = '_*[]()~`>#+-=|{}.!'
+    return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
+
 def identify_user(update: Update) -> Tuple[Optional[int], Optional[str], Optional[str]]:
     """Идентификация пользователя по обновлению Telegram."""
     try:
         user = update.effective_user
-        # Проверяем, существует ли user, перед доступом к его атрибутам
         if not user:
             logger.error(f"Не удалось определить пользователя для update {update}")
-            return None, None, None
-        user_id = user.id
-        username = user.username if user.username else None
-        full_name = user.full_name if user.full_name else None
-        logger.info(f"Identified user: ID={user_id}, Username={username}, Full Name={full_name}")
-        return user_id, username, full_name
+            return 0, "unknown", "unknown"  # Возвращаем значения по умолчанию
+        return user.id, user.username, user.full_name
     except AttributeError:
         logger.error(f"Ошибка при доступе к данным пользователя в update {update}")
-        return None, None, None
+        return 0, "unknown", "unknown"
 
 def is_admin(chat_id: int) -> bool:
     """Проверка, является ли пользователь администратором."""

@@ -1,143 +1,127 @@
+from typing import List, Optional, Tuple
 import sqlite3
 import logging
-from datetime import datetime, timedelta
-from typing import List, Optional, Tuple
+from datetime import datetime, date
 
 logger = logging.getLogger(__name__)
 
-VACATION_LIMIT_DAYS = 28  # Лимит отпусков в рабочих днях за год
+VACATION_LIMIT_DAYS = 28
+DB_PATH = '/app/data/employees.db'  # Можно вынести в .env позже
 
-def init_db() -> None:
-    """Инициализация базы данных с корректной структурой и индексами."""
+def create_tables() -> None:
+    """Создание таблиц в базе данных, если они еще не существуют."""
     try:
-        with sqlite3.connect('employees.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            # Создаём таблицу employees с уникальным id, именем и логином
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS employees (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     full_name TEXT NOT NULL,
-                    username TEXT NOT NULL UNIQUE
+                    username TEXT UNIQUE NOT NULL
                 )
             """)
-            # Создаём таблицу vacations с уникальным id, ссылкой на пользователя, датами и логином замещающего
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS vacations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER,
                     start_date TEXT NOT NULL,
                     end_date TEXT NOT NULL,
-                    replacement TEXT DEFAULT NULL,
-                    FOREIGN KEY (user_id) REFERENCES employees(id)
+                    replacement TEXT,
+                    FOREIGN KEY (user_id) REFERENCES employees(id) ON DELETE CASCADE
                 )
             """)
-            # Проверяем и создаём индексы, если их нет
-            for index_name, table, column in [
-                ('idx_vacations_user_id', 'vacations', 'user_id'),
-                ('idx_vacations_start_date', 'vacations', 'start_date'),
-                ('idx_vacations_end_date', 'vacations', 'end_date'),
-            ]:
-                cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='index' AND name=?", (index_name,))
-                if cursor.fetchone()[0] == 0:
-                    cursor.execute(f"CREATE INDEX {index_name} ON {table}({column})")
             conn.commit()
-            logger.info("База данных инициализирована.")
+            logger.info("Таблицы в базе данных созданы или уже существуют.")
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при инициализации базы данных: {e}")
+        logger.error(f"Ошибка при создании таблиц: {e}", exc_info=True)
+        raise
 
 def add_employee_to_db(full_name: str, username: str) -> Optional[int]:
-    """Добавление нового сотрудника в базу данных с уникальным id, именем и логином."""
+    """Добавление нового сотрудника в базу данных."""
     try:
-        with sqlite3.connect('employees.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT id FROM employees WHERE username = ?', (username,))
-            if cursor.fetchone():
+            cursor.execute("SELECT id FROM employees WHERE username = ?", (username,))
+            existing = cursor.fetchone()
+            if existing:
                 logger.warning(f"Сотрудник с username={username} уже существует")
-                return None
-            cursor.execute('INSERT INTO employees (full_name, username) VALUES (?, ?)', (full_name, username))
+                return existing[0]
+            cursor.execute("INSERT INTO employees (full_name, username) VALUES (?, ?)", (full_name, username))
             conn.commit()
-            cursor.execute('SELECT last_insert_rowid()')
-            user_id = cursor.fetchone()[0]
-        logger.info(f"Сотрудник добавлен: id={user_id}, full_name={full_name}, username={username}")
-        return user_id
+            cursor.execute("SELECT last_insert_rowid()")
+            new_id = cursor.fetchone()[0]
+            logger.info(f"Добавлен новый сотрудник: ID={new_id}, Full Name={full_name}, Username={username}")
+            return new_id
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при добавлении сотрудника: {e}")
+        logger.error(f"Ошибка при добавлении сотрудника {username}: {e}", exc_info=True)
         return None
 
-def add_vacation(user_id: int, start_date: str, end_date: str, replacement: Optional[str]) -> bool:
+def add_vacation(user_id: int, start_date: str, end_date: str, replacement: str = None) -> bool:
     """Добавление отпуска для сотрудника."""
     try:
-        # Проверяем, существует ли сотрудник, если нет — добавляем с минимальными данными
-        if not employee_exists(user_id):
-            logger.warning(f"Сотрудник с user_id={user_id} не найден, добавляем в employees")
-            # Здесь нужно получить имя и логин из Telegram, но для минимализма добавим заглушки
-            add_employee_to_db(f"Сотрудник_{user_id}", f"@user_{user_id}")
-        with sqlite3.connect('employees.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO vacations (user_id, start_date, end_date, replacement)
+                INSERT INTO vacations (user_id, start_date, end_date, replacement) 
                 VALUES (?, ?, ?, ?)
             """, (user_id, start_date, end_date, replacement))
             conn.commit()
-        logger.info(f"Отпуск добавлен для user_id={user_id}: {start_date} - {end_date}, замещающий: {replacement}")
-        return True
+            logger.info(f"Добавлен отпуск для user_id={user_id}: {start_date} - {end_date}, replacement={replacement}")
+            return True
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при добавлении отпуска для user_id={user_id}: {e}")
+        logger.error(f"Ошибка при добавлении отпуска для user_id={user_id}: {e}", exc_info=True)
         return False
 
-def get_user_vacations(user_id: int) -> List[Tuple[int, str, str, Optional[str]]]:
-    """Получение списка отпусков пользователя, отсортированных по дате начала."""
+def get_user_vacations(user_id: int) -> List[Tuple[int, str, str, str]]:
+    """Получение списка отпусков сотрудника."""
     try:
-        with sqlite3.connect('employees.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, start_date, end_date, replacement
-                FROM vacations
-                WHERE user_id = ?
-                ORDER BY start_date ASC
+                SELECT v.id, v.start_date, v.end_date, v.replacement 
+                FROM vacations v 
+                WHERE v.user_id = ? 
+                ORDER BY v.start_date ASC
             """, (user_id,))
-            vacations = [
-                (row['id'], row['start_date'], row['end_date'], row['replacement'])
-                for row in cursor.fetchall()
-            ]
-            logger.debug(f"Получены отпуска для user_id={user_id}: {vacations}")
-        return vacations
+            vacations = [(row['id'], row['start_date'], row['end_date'], row['replacement']) for row in cursor.fetchall()]
+            return vacations
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при получении отпусков для user_id={user_id}: {e}")
+        logger.error(f"Ошибка при получении отпусков для user_id={user_id}: {e}", exc_info=True)
         return []
 
-def edit_vacation(vacation_id: int, new_start_date: Optional[str], new_end_date: Optional[str], replacement: Optional[str]) -> bool:
+def edit_vacation(vacation_id: int, new_start_date: Optional[str], new_end_date: Optional[str], new_replacement: Optional[str]) -> bool:
     """Редактирование отпуска."""
     try:
-        with sqlite3.connect('employees.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            updates = []
-            params = []
-            if new_start_date is not None:
-                updates.append("start_date = ?")
-                params.append(new_start_date)
-            if new_end_date is not None:
-                updates.append("end_date = ?")
-                params.append(new_end_date)
-            if replacement is not None:
-                updates.append("replacement = ?")
-                params.append(replacement)
-            if not updates:
-                return True
-            params.append(vacation_id)
-            cursor.execute(f"UPDATE vacations SET {', '.join(updates)} WHERE id = ?", params)
+            cursor.execute("SELECT start_date, end_date, replacement FROM vacations WHERE id = ?", (vacation_id,))
+            current = cursor.fetchone()
+            if not current:
+                logger.error(f"Отпуск с ID {vacation_id} не найден")
+                return False
+            current_start, current_end, current_replacement = current
+            
+            update_start = new_start_date if new_start_date else current_start
+            update_end = new_end_date if new_end_date else current_end
+            update_replacement = new_replacement if new_replacement is not None else current_replacement
+            
+            cursor.execute("""
+                UPDATE vacations 
+                SET start_date = ?, end_date = ?, replacement = ? 
+                WHERE id = ?
+            """, (update_start, update_end, update_replacement, vacation_id))
             conn.commit()
-        logger.info(f"Отпуск {vacation_id} отредактирован: start_date={new_start_date}, end_date={new_end_date}, replacement={replacement}")
-        return True
+            logger.info(f"Отпуск с ID {vacation_id} отредактирован: {update_start} - {update_end}, replacement={update_replacement}")
+            return True
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при редактировании отпуска {vacation_id}: {e}")
+        logger.error(f"Ошибка при редактировании отпуска ID={vacation_id}: {e}", exc_info=True)
         return False
 
-def check_vacation_overlap(user_id: int, new_start: str, new_end: str, vacation_id: Optional[int] = None) -> bool:
-    """Проверка пересечения отпусков для пользователя."""
+def check_vacation_overlap(user_id: int, start_date: str, end_date: str, vacation_id: Optional[int] = None) -> bool:
+    """Проверка пересечения отпусков."""
     try:
-        with sqlite3.connect('employees.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             query = """
                 SELECT COUNT(*) 
@@ -145,191 +129,230 @@ def check_vacation_overlap(user_id: int, new_start: str, new_end: str, vacation_
                 WHERE user_id = ? 
                 AND (
                     (start_date <= ? AND end_date >= ?) OR
-                    (start_date <= ? AND end_date >= ?)
+                    (start_date <= ? AND end_date >= ?) OR
+                    (? <= start_date AND ? >= end_date)
                 )
             """
-            params = (user_id, new_end, new_start, new_start, new_end)
+            params = [user_id, start_date, start_date, end_date, end_date, start_date, end_date]
             if vacation_id:
                 query += " AND id != ?"
-                params += (vacation_id,)
+                params.append(vacation_id)
             cursor.execute(query, params)
             count = cursor.fetchone()[0]
             return count > 0
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при проверке пересечения отпусков для user_id={user_id}: {e}")
+        logger.error(f"Ошибка при проверке пересечения отпусков для user_id={user_id}: {e}", exc_info=True)
         return False
 
 def list_employees_db() -> List[str]:
-    """Получение списка всех сотрудников и их отпусков."""
+    """Получение списка всех сотрудников с информацией об использованных днях."""
     try:
-        with sqlite3.connect('employees.db') as conn:
+        logger.info("Начало выполнения list_employees_db")
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT e.id, e.full_name, e.username, v.start_date, v.end_date, v.replacement 
-                FROM employees e 
-                LEFT JOIN vacations v ON e.id = v.user_id 
-                WHERE v.start_date IS NOT NULL 
-                ORDER BY v.start_date ASC
+                SELECT e.id, e.full_name, e.username, 
+                       GROUP_CONCAT(v.start_date || ' - ' || v.end_date, ', ') AS vacations
+                FROM employees e
+                LEFT JOIN vacations v ON e.id = v.user_id
+                GROUP BY e.id, e.full_name, e.username
+                ORDER BY e.id
             """)
             employees = []
             for row in cursor.fetchall():
                 employee_id = row['id']
-                name = row['full_name']
+                full_name = row['full_name']
                 username = row['username']
-                start_date = row['start_date']
-                end_date = row['end_date'] if row['end_date'] else "Нет отпуска"
-                replacement = row['replacement'] if row['replacement'] else "Нет"
-                employees.append(f"{employee_id}, {name} (@{username}), {start_date} – {end_date}, {replacement}")
+                vacation_str = row['vacations'] or ''
+                used_days = 0
+                if vacation_str:
+                    vacation_pairs = vacation_str.split(', ')
+                    used_days = sum(
+                        calculate_vacation_days(start_end.split(' - ')[0], start_end.split(' - ')[1])
+                        for start_end in vacation_pairs
+                    )
+                employees.append(f"{employee_id}, @{username}, {full_name}, {used_days}")
+            logger.info("Конец выполнения list_employees_db")
             return employees
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при получении списка сотрудников: {e}")
+        logger.error(f"Ошибка при получении списка сотрудников: {e}", exc_info=True)
+        return []
+    except Exception as e:
+        logger.error(f"Необработанная ошибка в list_employees_db: {e}", exc_info=True)
         return []
 
-def delete_employee(user_id: int) -> bool:
-    """Удаление сотрудника и его отпусков."""
+def delete_employee(employee_id: int) -> bool:
+    """Удаление сотрудника и связанных отпусков."""
     try:
-        with sqlite3.connect('employees.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM vacations WHERE user_id = ?', (user_id,))
-            cursor.execute('DELETE FROM employees WHERE id = ?', (user_id,))
-            conn.commit()
-        logger.info(f"Сотрудник с ID {user_id} удалён.")
-        return True
+            cursor.execute("BEGIN TRANSACTION")
+            try:
+                cursor.execute("DELETE FROM vacations WHERE user_id = ?", (employee_id,))
+                cursor.execute("DELETE FROM employees WHERE id = ?", (employee_id,))
+                conn.commit()
+                if cursor.rowcount > 0:
+                    logger.info(f"Сотрудник с ID {employee_id} удалён")
+                    return True
+                logger.warning(f"Сотрудник с ID {employee_id} не найден")
+                return False
+            except sqlite3.Error:
+                conn.rollback()
+                raise
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при удалении сотрудника: {e}")
+        logger.error(f"Ошибка при удалении сотрудника ID={employee_id}: {e}", exc_info=True)
         return False
 
-def employee_exists(user_id: int) -> bool:
-    """Проверка существования сотрудника по user_id."""
+def employee_exists(username: str) -> bool:
+    """Проверка существования сотрудника по username."""
     try:
-        with sqlite3.connect('employees.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) FROM employees WHERE id = ?', (user_id,))
-            exists = cursor.fetchone()[0] > 0
-            logger.debug(f"Проверка существования сотрудника user_id={user_id}: {exists}")
-        return exists
+            cursor.execute("SELECT 1 FROM employees WHERE username = ?", (username,))
+            exists = cursor.fetchone() is not None
+            return exists
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при проверке существования сотрудника: {e}")
+        logger.error(f"Ошибка при проверке существования сотрудника {username}: {e}", exc_info=True)
         return False
-
-def get_employee_by_username(username: str) -> Optional[int]:
-    """Получение id сотрудника по username."""
-    try:
-        with sqlite3.connect('employees.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT id FROM employees WHERE username = ?', (username,))
-            result = cursor.fetchone()
-            if result:
-                return result[0]
-            return None
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка при поиске сотрудника по username={username}: {e}")
-        return None
 
 def clear_all_employees() -> bool:
-    """Очистка всех данных о сотрудниках и отпусках."""
+    """Очистка всех сотрудников и отпусков."""
     try:
-        with sqlite3.connect('employees.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM vacations')
-            cursor.execute('DELETE FROM employees')
+            cursor.execute("DELETE FROM vacations")
+            cursor.execute("DELETE FROM employees")
             conn.commit()
-        logger.info("Все данные о сотрудниках успешно удалены")
-        return True
+            logger.info("Все сотрудники и отпуска удалены")
+            return True
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при очистке базы данных: {e}")
+        logger.error(f"Ошибка при очистке базы данных: {e}", exc_info=True)
         return False
 
-def get_upcoming_vacations(target_date: datetime.date) -> List[Tuple[int, str, str, str, str, Optional[str]]]:
-    """Получение списка предстоящих отпусков до указанной даты, отсортированных по дате начала."""
-    try:
-        with sqlite3.connect('employees.db') as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            current_date = datetime.now().date()
-            cursor.execute("""
-                SELECT e.id, e.full_name, e.username, v.start_date, v.end_date, v.replacement
-                FROM employees e
-                JOIN vacations v ON e.id = v.user_id
-                WHERE v.start_date <= ? AND v.end_date >= ?
-                ORDER BY v.start_date ASC
-            """, (target_date.strftime('%Y-%m-%d'), current_date.strftime('%Y-%m-%d')))
-            vacations = [
-                (row['id'], row['full_name'], row['username'], row['start_date'], row['end_date'], row['replacement'])
-                for row in cursor.fetchall()
-            ]
-            logger.debug(f"Получены предстоящие отпуска до {target_date}: {vacations}")
-        return vacations
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка при получении предстоящих отпусков: {e}")
-        return []
-
-def get_all_vacations() -> List[Tuple[int, str, str, str, Optional[str]]]:
-    """Получение списка всех сотрудников и их отпусков."""
-    try:
-        with sqlite3.connect('employees.db') as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT e.id, e.full_name, e.username, v.start_date, v.end_date, v.replacement 
-                FROM employees e 
-                LEFT JOIN vacations v ON e.id = v.user_id 
-                WHERE v.start_date IS NOT NULL 
-                ORDER BY v.start_date ASC
-            """)
-            return [(row['id'], row['full_name'], row['username'], row['start_date'], row['end_date'], row['replacement']) for row in cursor.fetchall()]
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка при получении списка всех отпусков: {e}")
-        return []
-
-def get_vacation_stats() -> List[Tuple[str, int, float]]:
-    """Получение статистики по отпускам (месяц, количество, дни)."""
-    try:
-        with sqlite3.connect('employees.db') as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT strftime('%Y-%m', start_date) as month, COUNT(*) as count, 
-                       SUM(julianday(end_date) - julianday(start_date)) as days
-                FROM vacations
-                GROUP BY strftime('%Y-%m', start_date)
-                ORDER BY month
-            """)
-            stats = [(row['month'], row['count'], row['days']) for row in cursor.fetchall()]
-            return stats
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка при получении статистики отпусков: {e}")
-        return []
-
 def calculate_vacation_days(start_date: str, end_date: str) -> int:
-    """Рассчитывает количество рабочих дней между датами, исключая выходные."""
-    start = datetime.strptime(start_date, "%Y-%m-%d").date()
-    end = datetime.strptime(end_date, "%Y-%m-%d").date()
-    days = 0
-    current = start
-    while current <= end:
-        if current.weekday() < 5:  # Пн-Пт (0-4)
-            days += 1
-        current += timedelta(days=1)
-    return days
-
-def get_remaining_vacation_days(user_id: int, year: int) -> int:
-    """Получение оставшихся дней отпуска за указанный год."""
+    """Расчет количества дней отпуска."""
     try:
-        with sqlite3.connect('employees.db') as conn:
-            conn.row_factory = sqlite3.Row
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+        if start > end:
+            return 0
+        days = (end - start).days + 1
+        return days
+    except ValueError as e:
+        logger.error(f"Ошибка при расчёте дней между {start_date} и {end_date}: {e}", exc_info=True)
+        return 0
+
+def get_used_vacation_days(user_id: int, year: int) -> int:
+    """Получение использованных дней отпуска за год."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT start_date, end_date 
                 FROM vacations 
                 WHERE user_id = ? 
                 AND strftime('%Y', start_date) = ?
-                ORDER BY start_date ASC
             """, (user_id, str(year)))
-            vacations = [(row['start_date'], row['end_date']) for row in cursor.fetchall()]
-        total_days = sum(calculate_vacation_days(start, end) for start, end in vacations)
-        return VACATION_LIMIT_DAYS - total_days  # Лимит 28 рабочих дня
+            vacations = cursor.fetchall()
+            used_days = sum(calculate_vacation_days(start, end) for start, end in vacations)
+            return used_days
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при расчёте оставшихся дней отпуска для user_id={user_id}: {e}")
-        return VACATION_LIMIT_DAYS  # Возвращаем лимит по умолчанию в случае ошибки
+        logger.error(f"Ошибка при получении использованных дней для user_id={user_id}: {e}", exc_info=True)
+        return 0
+
+def get_vacation_stats() -> List[Tuple[str, int, float]]:
+    """Получение статистики по отпускам."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT strftime('%m', start_date) as month, 
+                       COUNT(*) as vacation_count,
+                       start_date, end_date 
+                FROM vacations 
+                GROUP BY month 
+                ORDER BY month
+            """)
+            stats = []
+            for row in cursor.fetchall():
+                month = row['month']
+                month_name = datetime(2023, int(month), 1).strftime('%B').replace("January", "Январь").replace("February", "Февраль").replace("March", "Март").replace("April", "Апрель").replace("May", "Май").replace("June", "Июнь").replace("July", "Июль").replace("August", "Август").replace("September", "Сентябрь").replace("October", "Октябрь").replace("November", "Ноябрь").replace("December", "Декабрь")
+                count = row['vacation_count']
+                cursor.execute("SELECT start_date, end_date FROM vacations WHERE strftime('%m', start_date) = ?", (month,))
+                days = sum(calculate_vacation_days(row['start_date'], row['end_date']) for row in cursor.fetchall())
+                stats.append((month_name, count, days))
+            return stats
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка при получении статистики отпусков: {e}", exc_info=True)
+        return []
+
+def get_all_vacations() -> List[Tuple[int, str, str, str, str, str]]:
+    """Получение всех отпусков с информацией о сотрудниках."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT e.id, e.full_name, e.username, v.start_date, v.end_date, v.replacement 
+                FROM employees e 
+                LEFT JOIN vacations v ON e.id = v.user_id 
+                ORDER BY e.id, v.start_date
+            """)
+            vacations = [(row['id'], row['full_name'], row['username'], row['start_date'] or '', row['end_date'] or '', row['replacement'] or '') for row in cursor.fetchall()]
+            return vacations
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка при получении всех отпусков: {e}", exc_info=True)
+        return []
+
+def get_employee_by_username(username: str) -> Optional[int]:
+    """Получение ID сотрудника по username."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM employees WHERE username = ?", (username,))
+            result = cursor.fetchone()
+            return result[0] if result else None
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка при поиске сотрудника по username={username}: {e}", exc_info=True)
+        return None
+
+def get_upcoming_vacations(end_date: date) -> List[Tuple[int, str, str, str, str, str]]:
+    """Получение предстоящих отпусков до указанной даты."""
+    if not isinstance(end_date, date):
+        logger.error(f"Некорректный тип end_date: {type(end_date)}")
+        return []
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT e.id, e.full_name, e.username, v.start_date, v.end_date, v.replacement 
+                FROM employees e 
+                JOIN vacations v ON e.id = v.user_id 
+                WHERE v.start_date <= ? 
+                AND v.end_date >= date('now')
+                ORDER BY v.start_date
+            """, (end_date.isoformat(),))
+            vacations = [(row['id'], row['full_name'], row['username'], row['start_date'], row['end_date'], row['replacement']) for row in cursor.fetchall()]
+            return vacations
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка при получении предстоящих отпусков: {e}", exc_info=True)
+        return []
+
+def delete_vacation(vacation_id: int) -> bool:
+    """Удаление отпуска по ID."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM vacations WHERE id = ?", (vacation_id,))
+            conn.commit()
+            if cursor.rowcount > 0:
+                logger.info(f"Отпуск с ID {vacation_id} удалён")
+                return True
+            logger.warning(f"Отпуск с ID {vacation_id} не найден")
+            return False
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка при удалении отпуска ID={vacation_id}: {e}", exc_info=True)
+        return False
