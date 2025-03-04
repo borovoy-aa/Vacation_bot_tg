@@ -18,7 +18,7 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-ADMIN_ID = int(os.getenv('ADMIN_ID'))
+ADMIN_IDS = [int(id.strip()) for id in os.getenv('ADMIN_IDS', '').split(',') if id.strip()]
 GROUP_CHAT_ID = int(os.getenv('GROUP_CHAT_ID'))
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await reset_state(context)
     await update.message.reply_text("Действие отменено.")
     return ConversationHandler.END
+
+def is_admin(user_id: int) -> bool:
+    """Проверка, является ли пользователь администратором."""
+    return user_id in ADMIN_IDS
 
 async def check_user_permissions(update: Update, context: ContextTypes.DEFAULT_TYPE, require_admin: bool = False) -> bool:
     """Проверка прав пользователя."""
@@ -157,8 +161,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data['username'] = username
         logger.info(f"Пользователь {user_id} уже зарегистрирован: {context.user_data['name']} (@{username})")
         await set_full_commands(context)
-        await show_menu(update, context)
-        return ConversationHandler.END
+        return await show_menu(update, context)
 
     # Если уже в процессе регистрации, напоминаем
     if context.user_data.get('awaiting_fio'):
@@ -224,33 +227,64 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             "Теперь вы можете использовать команды бота."
         )
         await set_full_commands(context)
-        await show_menu(update, context)
-        return ConversationHandler.END
+        return await show_menu(update, context)
     except Exception as e:
         logger.error(f"Ошибка при регистрации пользователя {user_id}: {str(e)}", exc_info=True)
         await update.message.reply_text(f"Произошла ошибка: {str(e)}. Обратитесь к @Admin.")
         return ConversationHandler.END
+    
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    command = query.data  # Получаем команду из callback_data
 
-async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Показ меню после регистрации."""
+    # Вызываем соответствующий обработчик в зависимости от команды
+    if command == '/add_vacation':
+        await add_vacation_start(update, context)
+    elif command == '/edit_vacation':
+        await edit_vacation_start(update, context)
+    elif command == '/delete_vacation':
+        await delete_vacation_start(update, context)
+    elif command == '/my_vacations':
+        await my_vacations(update, context)
+    elif command == '/notify':
+        await notify_handler(update, context)
+    elif command == '/list_employees':
+        await list_employees(update, context)
+    elif command == '/stats':
+        await stats(update, context)
+    elif command == '/export_employees':
+        await export_employees(update, context)
+    elif command == '/export_vacations':
+        await export_vacations(update, context)
+    elif command == '/delete_employee':
+        await delete_employee_command(update, context)
+    elif command == '/clear_all_employees':
+        await clear_all_employees_command(update, context)
+    else:
+        await query.message.reply_text("Неизвестная команда.")
+
+    # Подтверждаем получение callback_query
+    await query.answer()
+
+async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показ главного меню с командами на русском языке через слэш /."""
     user_id = update.effective_user.id
-    full_name = context.user_data['name']
-    username = context.user_data['username']
+    full_name = context.user_data.get('name')
+    username = context.user_data.get('username')
 
-    if not await check_user_permissions(update, context):
-        return ConversationHandler.END
-
+    # Формируем клавиатуру с командами через слэш /
     keyboard = [
-        ["/add_vacation", "/edit_vacation"],
-        ["/delete_vacation", "/notify"],
-        ["/my_vacations"],
+        ["/add_vacation", "/edit_vacation", "/delete_vacation"],
+        ["/my_vacations", "/notify"],
     ]
-    if is_admin(user_id):
+    if user_id in ADMIN_IDS:
         keyboard.append(["/list_employees", "/stats"])
-        keyboard.append(["/delete_employee", "/export_employees"])
-        keyboard.append(["/clear_all_employees"])
+        keyboard.append(["/export_employees", "/export_vacations"])
+        keyboard.append(["/delete_employee", "/clear_all_employees"])
+
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+    # Текст сообщения на русском языке с фокусом на команды через /
     message = (
         f"👋 Привет, {full_name} (@{username})!\n"
         "Я бот для управления отпусками. Вот что я умею:\n\n"
@@ -258,26 +292,80 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "✏️ /edit_vacation — Изменить существующий отпуск\n"
         "🗑️ /delete_vacation — Удалить свой отпуск\n"
         "🔔 /notify — Показать предстоящие отпуска на 7 дней\n"
-        "📋 /my_vacations — Показать список ваших отпусков\n"  # Новая строка
+        "📋 /my_vacations — Показать список ваших отпусков\n"
         "🚫 /cancel — Отменить текущее действие\n\n"
-        "Даты вводите в формате YYYY-MM-DD (например, 2025-03-01)."
+        "Даты вводите в формате YYYY-MM-DD (например, 2025-03-01).\n"
+        "Используйте кнопки с командами (например, /add_vacation) для взаимодействия."
     )
-    if is_admin(user_id):
+    if user_id in ADMIN_IDS:
         message += (
             "\n\nКоманды для администратора:\n"
             "👥 /list_employees — Показать список сотрудников\n"
             "🗑️ /delete_employee — Удалить сотрудника по ID\n"
             "📊 /stats — Статистика отпусков по месяцам\n"
-            "📤 /export_employees — Выгрузить данные в Excel\n"
+            "📤 /export_vacations — Выгрузить данные отпусков в Excel\n"
+            "📤 /export_employees — Выгрузить данные сотрудников в Excel\n"
             "⚠️ /clear_all_employees — Удалить всех сотрудников и их отпуска\n\n"
             "Вы админ, так что управляйте всем через личку!"
         )
-    message += "\nВопросы? Пишите @Admin."
 
+    message += "\n\nВопросы? Пишите @Admin."
     await update.message.reply_text(message, reply_markup=reply_markup)
     logger.info(f"Пользователь {user_id} получил меню команд")
     return ConversationHandler.END
 
+async def handle_button_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик нажатий на кнопки с английскими названиями."""
+    user_id = update.effective_user.id
+    text = update.message.text
+
+    # Сопоставление английских текстов кнопок с командами
+    button_to_command = {
+        "Add Vacation": "/add_vacation",
+        "Edit Vacation": "/edit_vacation",
+        "Delete Vacation": "/delete_vacation",
+        "My Vacations": "/my_vacations",
+        "Notifications": "/notify",
+        "List Employees": "/list_employees",
+        "Stats": "/stats",
+        "Export Employees": "/export_employees",
+        "Export Vacations": "/export_vacations",
+        "Delete Employee": "/delete_employee",
+        "Clear All Employees": "/clear_all_employees",
+    }
+
+    # Если текст кнопки известен, выполняем соответствующую команду
+    if text in button_to_command:
+        command = button_to_command[text]
+        logger.info(f"Пользователь {user_id} нажал кнопку '{text}', выполняется команда {command}")
+
+        # Вызываем соответствующую функцию
+        if command == "/add_vacation":
+            await add_vacation_start(update, context)
+        elif command == "/edit_vacation":
+            await edit_vacation_start(update, context)
+        elif command == "/delete_vacation":
+            await delete_vacation_start(update, context)
+        elif command == "/my_vacations":
+            await my_vacations(update, context)
+        elif command == "/notify":
+            await notify_handler(update, context)
+        elif command == "/list_employees":
+            await list_employees(update, context)
+        elif command == "/stats":
+            await stats(update, context)
+        elif command == "/export_employees":
+            await export_employees(update, context)
+        elif command == "/export_vacations":
+            await export_vacations(update, context)
+        elif command == "/delete_employee":
+            await delete_employee_command(update, context)
+        elif command == "/clear_all_employees":
+            await clear_all_employees_command(update, context)
+    else:
+        # Если текст не является кнопкой, перенаправляем в random_text_handler
+        await random_text_handler(update, context)
+        
 async def handle_invalid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обработка некорректных команд."""
     user_id = update.effective_user.id
@@ -989,7 +1077,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     try:
         stats = get_vacation_stats()
-        message = "СТАТИСТИКА ОТПУСКОВ:\n\n"
+        message = "СТАТИСТИKA ОТПУСКОВ:\n\n"
         for month, count, days, employee_count in stats:
             message += f"Месяц {month}: {count} отпусков, {days:.0f} дней, {employee_count} сотрудников\n"
         total_vacations = sum(row[1] for row in stats)
@@ -1001,6 +1089,52 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         logger.info(f"Пользователь {user_id} получил статистику отпусков")
     except Exception as e:
         logger.error(f"Ошибка при получении статистики для пользователя {user_id}: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"Произошла ошибка: {str(e)}. Обратитесь к @Admin.")
+    return ConversationHandler.END
+
+async def export_vacations(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    chat_type = update.effective_chat.type
+    logger.info(f"Пользователь {user_id} запросил выгрузку данных отпусков")
+
+    if chat_type != 'private':
+        logger.info(f"Команда /export_vacations проигнорирована в чате {update.effective_chat.id}")
+        await update.message.reply_text("Все команды доступны только в личных сообщениях.")
+        return ConversationHandler.END
+
+    if not await load_user_data(update, context):
+        return ConversationHandler.END
+
+    if not await check_user_permissions(update, context, require_admin=True):
+        return ConversationHandler.END
+    if context.user_data.get('action'):
+        await update.message.reply_text("Сначала заверши текущее действие или выйди через /cancel.")
+        logger.warning(f"Пользователь {user_id} пытался запросить выгрузку во время другого действия")
+        return ConversationHandler.END
+
+    try:
+        import pandas as pd
+        import io
+        from telegram import InputFile
+        from database.db_operations import get_all_vacations
+
+        vacations = get_all_vacations()
+        if not vacations:
+            await update.message.reply_text("Список отпусков пуст.")
+            logger.info(f"Список отпусков пуст для выгрузки пользователем {user_id}")
+            return ConversationHandler.END
+        df = pd.DataFrame(vacations, columns=['ID', 'ФИО', 'Логин', 'Дата начала', 'Дата окончания', 'Замещающий'])
+        buffer = io.BytesIO()
+        df.to_excel(buffer, index=False, engine='openpyxl')
+        buffer.seek(0)
+        await update.message.reply_document(
+            document=InputFile(buffer, filename='vacations.xlsx'),
+            caption="Список отпусков выгружен.\n\nВопросы? @Admin"
+        )
+        buffer.close()
+        logger.info(f"Пользователь {user_id} успешно выгрузил данные отпусков")
+    except Exception as e:
+        logger.error(f"Ошибка при выгрузке данных отпусков для пользователя {user_id}: {str(e)}", exc_info=True)
         await update.message.reply_text(f"Произошла ошибка: {str(e)}. Обратитесь к @Admin.")
     return ConversationHandler.END
 
@@ -1028,23 +1162,25 @@ async def export_employees(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         import pandas as pd
         import io
         from telegram import InputFile
-        employees = get_all_vacations()
+        from database.db_operations import get_all_employees_with_registration
+
+        employees = get_all_employees_with_registration()
         if not employees:
             await update.message.reply_text("Список сотрудников пуст.")
             logger.info(f"Список сотрудников пуст для выгрузки пользователем {user_id}")
             return ConversationHandler.END
-        df = pd.DataFrame(employees, columns=['ID', 'ФИО', 'Логин', 'Дата начала', 'Дата окончания', 'Замещающий'])
+        df = pd.DataFrame(employees, columns=['ID', 'ФИО', 'Логин', 'Дата регистрации'])
         buffer = io.BytesIO()
         df.to_excel(buffer, index=False, engine='openpyxl')
         buffer.seek(0)
         await update.message.reply_document(
-            document=InputFile(buffer, filename='employees_vacations.xlsx'),
-            caption="Список сотрудников и отпусков выгружен.\n\nВопросы? @Admin"
+            document=InputFile(buffer, filename='employees.xlsx'),
+            caption="Список сотрудников выгружен.\n\nВопросы? @Admin"
         )
         buffer.close()
         logger.info(f"Пользователь {user_id} успешно выгрузил данные сотрудников")
     except Exception as e:
-        logger.error(f"Ошибка при выгрузке данных для пользователя {user_id}: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка при выгрузке данных сотрудников для пользователя {user_id}: {str(e)}", exc_info=True)
         await update.message.reply_text(f"Произошла ошибка: {str(e)}. Обратитесь к @Admin.")
     return ConversationHandler.END
 
@@ -1121,21 +1257,23 @@ async def set_full_commands(context: ContextTypes.DEFAULT_TYPE) -> None:
             BotCommand("add_vacation", "Добавить отпуск"),
             BotCommand("edit_vacation", "Редактировать отпуск"),
             BotCommand("delete_vacation", "Удалить отпуск"),
-            BotCommand("notify", "Показать предстоящие отпуска"),
-            BotCommand("my_vacations", "Показать список ваших отпусков"),  # Новая строка
+            BotCommand("notify", "Уведомления"),
+            BotCommand("my_vacations", "Мои отпуска"),
         ]
         admin_commands = [
             BotCommand("list_employees", "Список сотрудников"),
             BotCommand("delete_employee", "Удалить сотрудника"),
-            BotCommand("stats", "Статистика отпусков"),
-            BotCommand("export_employees", "Выгрузить сотрудников"),
+            BotCommand("stats", "Статистика"),
+            BotCommand("export_vacations", "Экспорт отпусков"),
+            BotCommand("export_employees", "Экспорт сотрудников"),
             BotCommand("clear_all_employees", "Очистить базу данных"),
         ]
         await context.bot.set_my_commands(public_commands, scope={"type": "all_private_chats"})
-        await context.bot.set_my_commands(public_commands + admin_commands, scope={"type": "chat", "chat_id": ADMIN_ID})
-        logger.info("Полный список команд бота установлен")
+        for admin_id in ADMIN_IDS:
+            await context.bot.set_my_commands(public_commands + admin_commands, scope={"type": "chat", "chat_id": admin_id})
+        logger.info("Полный список команд установлен для админов")
     except Exception as e:
-        logger.error(f"Ошибка при установке полного списка команд: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка установки команд: {e}", exc_info=True)
 
 async def handle_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE, next_state: int, key: str, 
                           is_start_date: bool = True, check_overlap: bool = False) -> int:
@@ -1219,6 +1357,19 @@ async def repeat_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     )
     return REGISTER
 
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик ошибок с уведомлением администраторов."""
+    error_msg = f"Произошла ошибка: {context.error}"
+    logger.error(error_msg, exc_info=True)
+    admin_ids = [int(id.strip()) for id in os.getenv('ADMIN_IDS', '').split(',') if id.strip()]
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=error_msg[:4000])
+        except Exception as e:
+            logger.error(f"Не удалось отправить уведомление админу {admin_id}: {e}", exc_info=True)
+    if update and update.message:
+        await update.message.reply_text("Произошла ошибка. Обратитесь к @Admin.")
+        
 # Обработчики
 registration_handler = ConversationHandler(
     entry_points=[CommandHandler('start', start, filters.ChatType.PRIVATE)],
@@ -1289,7 +1440,7 @@ delete_vacation_handler = ConversationHandler(
 )
 
 delete_employee_handler = ConversationHandler(
-    entry_points=[CommandHandler('delete_employee', delete_employee_command, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_ID))],
+    entry_points=[CommandHandler('delete_employee', delete_employee_command, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_IDS))],
     states={
         DELETE_EMPLOYEE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, delete_employee_id)],
     },
@@ -1298,7 +1449,7 @@ delete_employee_handler = ConversationHandler(
 )
 
 clear_all_employees_handler = ConversationHandler(
-    entry_points=[CommandHandler('clear_all_employees', clear_all_employees_command, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_ID))],
+    entry_points=[CommandHandler('clear_all_employees', clear_all_employees_command, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_IDS))],
     states={
         CLEAR_ALL_CONFIRM: [
             CommandHandler('yes', clear_all_confirm),
@@ -1311,9 +1462,10 @@ clear_all_employees_handler = ConversationHandler(
 )
 
 notify_handler = CommandHandler('notify', notify_handler, filters.ChatType.PRIVATE)
-list_employees_handler = CommandHandler('list_employees', list_employees, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_ID))
-stats_handler = CommandHandler('stats', stats, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_ID))
-export_employees_handler = CommandHandler('export_employees', export_employees, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_ID))
+list_employees_handler = CommandHandler('list_employees', list_employees, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_IDS))
+stats_handler = CommandHandler('stats', stats, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_IDS))
 invalid_command_handler = MessageHandler(filters.COMMAND & ~filters.Regex(r'^/(start|cancel)$'), handle_invalid_command, filters.ChatType.PRIVATE)
 random_text_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, handle_random_text, filters.ChatType.PRIVATE)
 my_vacations_handler = CommandHandler('my_vacations', my_vacations, filters.ChatType.PRIVATE)
+export_vacations_handler = CommandHandler('export_vacations', export_vacations, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_IDS))
+export_employees_handler = CommandHandler('export_employees', export_employees, filters.ChatType.PRIVATE & filters.User(user_id=ADMIN_IDS))

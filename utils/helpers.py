@@ -26,5 +26,5 @@ def is_admin(chat_id: int) -> bool:
     import os
     from dotenv import load_dotenv
     load_dotenv()
-    ADMIN_ID = int(os.getenv('ADMIN_ID'))
-    return chat_id == ADMIN_ID
+    ADMIN_IDS = [int(id.strip()) for id in os.getenv('ADMIN_IDS', '').split(',') if id.strip()]
+    return chat_id == ADMIN_IDS

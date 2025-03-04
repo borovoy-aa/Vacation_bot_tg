@@ -9,6 +9,7 @@ VACATION_LIMIT_DAYS = 28
 DB_PATH = '/app/data/employees.db'  # Можно вынести в .env позже
 
 def create_tables():
+    """Создание таблиц в базе данных, если их нет."""
     try:
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
@@ -16,8 +17,9 @@ def create_tables():
                 CREATE TABLE IF NOT EXISTS employees (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     full_name TEXT NOT NULL,
-                    username TEXT UNIQUE NOT NULL,
-                    telegram_id INTEGER
+                    username TEXT NOT NULL UNIQUE,
+                    telegram_id INTEGER UNIQUE,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             cursor.execute("""
@@ -28,7 +30,6 @@ def create_tables():
                     end_date TEXT NOT NULL,
                     replacement TEXT,
                     replacement_full_name TEXT,
-                    notified_days TEXT DEFAULT '[]',
                     FOREIGN KEY (user_id) REFERENCES employees(id) ON DELETE CASCADE
                 )
             """)
@@ -36,28 +37,25 @@ def create_tables():
             logger.info("Таблицы в базе данных созданы или уже существуют.")
     except sqlite3.Error as e:
         logger.error(f"Ошибка при создании таблиц: {e}", exc_info=True)
+        raise
 
-def add_employee_to_db(full_name: str, username: str, telegram_id: Optional[int] = None) -> Optional[int]:
-    """Добавление сотрудника в базу данных с поддержкой telegram_id."""
+def add_employee_to_db(full_name: str, username: str, telegram_id: int) -> Optional[int]:
+    """Добавление нового сотрудника в базу данных."""
     try:
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            # Проверяем, существует ли сотрудник с таким telegram_id или username
-            cursor.execute("SELECT id FROM employees WHERE telegram_id = ? OR username = ?", (telegram_id, username))
-            existing = cursor.fetchone()
-            if existing:
-                logger.info(f"Сотрудник с telegram_id={telegram_id} или username={username} уже существует, ID={existing[0]}")
-                return existing[0]
-            # Добавляем нового сотрудника
-            cursor.execute(
-                "INSERT INTO employees (full_name, username, telegram_id) VALUES (?, ?, ?)",
-                (full_name, username, telegram_id)
-            )
+            cursor.execute("""
+                INSERT INTO employees (full_name, username, telegram_id, created_at)
+                VALUES (?, ?, ?, datetime('now'))
+            """, (full_name, username, telegram_id))
             conn.commit()
             logger.info(f"Добавлен сотрудник: {full_name} (@{username}), telegram_id={telegram_id}")
             return cursor.lastrowid
+    except sqlite3.IntegrityError as e:
+        logger.error(f"Ошибка уникальности при добавлении сотрудника: {e}")
+        return None
     except sqlite3.Error as e:
-        logger.error(f"Ошибка при добавлении сотрудника username={username}: {e}", exc_info=True)
+        logger.error(f"Ошибка при добавлении сотрудника: {e}", exc_info=True)
         return None
 
 def add_vacation(user_id: int, start_date: str, end_date: str, replacement: Optional[str] = None, replacement_full_name: Optional[str] = None) -> bool:
@@ -323,10 +321,12 @@ def get_employee_by_username(username: str) -> Optional[int]:
         return None
 
 def get_upcoming_vacations(target_date: date) -> List[Tuple[int, str, str, str, str, str]]:
-    """Получение предстоящих отпусков, начинающихся в указанную дату."""
+    """Получение предстоящих отпусков в диапазоне до указанной даты."""
     if not isinstance(target_date, date):
         logger.error(f"Некорректный тип target_date: {type(target_date)}")
         return []
+    current_date = datetime.now().date()
+    logger.info(f"Поиск отпусков с {current_date} до {target_date}")
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
@@ -335,11 +335,14 @@ def get_upcoming_vacations(target_date: date) -> List[Tuple[int, str, str, str, 
                 SELECT e.id, e.full_name, e.username, v.start_date, v.end_date, v.replacement 
                 FROM employees e 
                 JOIN vacations v ON e.id = v.user_id 
-                WHERE v.start_date = ?
-                AND v.end_date >= date('now')
+                WHERE v.start_date <= ?
+                AND v.end_date >= ?
                 ORDER BY v.start_date
-            """, (target_date.isoformat(),))
+            """, (target_date.isoformat(), current_date.isoformat()))
             vacations = [(row['id'], row['full_name'], row['username'], row['start_date'], row['end_date'], row['replacement']) for row in cursor.fetchall()]
+            logger.info(f"Найдено отпусков: {len(vacations)}")
+            for v in vacations:
+                logger.info(f"Отпуск: {v}")
             return vacations
     except sqlite3.Error as e:
         logger.error(f"Ошибка при получении предстоящих отпусков: {e}", exc_info=True)
@@ -360,3 +363,23 @@ def delete_vacation(vacation_id: int) -> bool:
     except sqlite3.Error as e:
         logger.error(f"Ошибка при удалении отпуска ID={vacation_id}: {e}", exc_info=True)
         return False
+    
+def get_all_employees_with_registration() -> List[Tuple[int, str, str, str]]:
+    """Получение списка всех сотрудников с датой регистрации."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT e.id, e.full_name, e.username, e.created_at
+                FROM employees e
+                ORDER BY e.id
+            """)
+            employees = [(row['id'], row['full_name'], row['username'], row['created_at']) for row in cursor.fetchall()]
+            logger.info(f"Найдено сотрудников: {len(employees)}")
+            for e in employees:
+                logger.info(f"Сотрудник: {e}")
+            return employees
+    except sqlite3.Error as e:
+        logger.error(f"Ошибка при получении списка сотрудников: {e}", exc_info=True)
+        return []
